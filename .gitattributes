@@ -1,0 +1,9 @@
+# Normalise line endings in the repository.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
+*.gz  binary
+*.iso binary
+*.qcow2 binary

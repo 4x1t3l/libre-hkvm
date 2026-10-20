@@ -1,0 +1,66 @@
+name: Bug report
+description: Something in HKVM Panel is not working as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this.
+
+        **Before filing:** please check that the panel is not exposed
+        directly to the internet. See [SECURITY.md](SECURITY.md) - several
+        routes are unauthenticated by design at the moment.
+
+  - type: input
+    id: version
+    attributes:
+      label: HKVM Panel version
+      placeholder: "e.g. V3.0"
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Host environment
+      description: OS, CPU architecture, whether KVM is available
+      placeholder: "Debian 12, x86_64, /dev/kvm present"
+    validations:
+      required: true
+
+  - type: input
+    id: qemu
+    attributes:
+      label: QEMU version
+      placeholder: "qemu-system-x86_64 8.2.1"
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you expect to happen, and what happened instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: A minimal set of steps, please - no real customer data.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Panel log output
+      description: Output from the panel's console around the time of the problem.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      options:
+        - label: I have changed the default admin password
+        - label: I have read SECURITY.md

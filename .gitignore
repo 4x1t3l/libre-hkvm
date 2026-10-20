@@ -1,0 +1,29 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+app
+*.pkg
+
+# runtime data
+.env
+*.db
+*.db-shm
+*.db-wal
+hkvm.db
+
+# logs
+*.log
+npm-debug.log*
+
+# editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# vm artefacts
+vms/
+*.qcow2
+*.iso

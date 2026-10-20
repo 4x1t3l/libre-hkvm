@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Node ${{ matrix.node }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        node: ['20', '22']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: |
+          npm ci --no-audit --no-fund
+          # npm >= 11 blocks dependency install scripts by default.
+          # The `allowScripts` block in package.json covers sqlite3 and
+          # ssh2, but rebuild them if the native bindings are missing.
+          npm rebuild sqlite3 ssh2 || true
+
+      - name: Syntax check
+        run: node --check app.js
+
+      - name: Check that no licence code remains
+        run: |
+          if grep -rniE "licenses?\.(isActivated|initLicenseMiddleware|activateWithServer|activateWithServerWrapped)|require\(['\"]\./licenses" \
+               --include='*.js' --include='*.ejs' --include='*.json' \
+               --exclude-dir=node_modules --exclude-dir=.git --exclude=package-lock.json . ; then
+            echo "::error::licence references found - the open-source edition must stay licence-free"
+            exit 1
+          fi
+          echo "no licence references"
+
+      - name: Smoke test
+        env:
+          PORT: '8199'
+          HKVM_DATA_DIR: ${{ runner.temp }}/hkvm-ci
+        run: |
+          node app.js &
+          PID=$!
+          for i in $(seq 1 30); do
+            if curl -fsS -o /dev/null "http://127.0.0.1:8199/login"; then break; fi
+            sleep 1
+          done
+          curl -fsS -o /dev/null "http://127.0.0.1:8199/login" || { echo "panel did not start"; kill $PID; exit 1; }
+          curl -s -o /dev/null -w 'GET /api/vms -> %{http_code}\n' "http://127.0.0.1:8199/api/vms"
+          kill $PID
+
+      - name: Build the single-file binary
+        if: matrix.node == '22'
+        run: |
+          npm install -g pkg
+          pkg . --targets node22-linux-x64 --output dist/app
+          ls -la dist/app
