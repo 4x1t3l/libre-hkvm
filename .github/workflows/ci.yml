@@ -62,8 +62,11 @@ jobs:
           kill $PID
 
       - name: Build the single-file binary
-        if: matrix.node == '22'
+        if: matrix.node == '20'
         run: |
           npm install -g pkg
-          pkg . --targets node22-linux-x64 --output dist/app
+          # pkg 5.8.1 is the latest release and ships base binaries up to
+          # node20.  To build for node22 you need a custom base binary and
+          # PKG_NODE_PATH - see the README.
+          pkg . --targets node20-linux-x64 --output dist/app
           ls -la dist/app

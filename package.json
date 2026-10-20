@@ -47,7 +47,7 @@
                                "public/**/*"
                            ],
                 "targets":  [
-                                "node22-linux-x64"
+                                "node20-linux-x64"
                             ],
                 "outputPath":  "dist"
             },
