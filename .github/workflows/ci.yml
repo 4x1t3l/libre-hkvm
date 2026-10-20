@@ -7,13 +7,12 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
-    name: Node ${{ matrix.node }} on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+  test:
+    name: Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
         node: ['20', '22']
 
     steps:
@@ -61,12 +60,54 @@ jobs:
           curl -s -o /dev/null -w 'GET /api/vms -> %{http_code}\n' "http://127.0.0.1:8199/api/vms"
           kill $PID
 
+  build:
+    name: Single-file binary
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        # sqlite3 5.x ships an N-API (napi-v6) prebuild, so the binding is
+        # ABI-stable and the same .node works inside the packaged binary.
+        run: |
+          npm ci --no-audit --no-fund
+          npm rebuild sqlite3 ssh2 || true
+          ls -la node_modules/sqlite3/build/Release/ || true
+
       - name: Build the single-file binary
-        if: matrix.node == '20'
         run: |
           npm install -g pkg
-          # pkg 5.8.1 is the latest release and ships base binaries up to
-          # node20.  To build for node22 you need a custom base binary and
-          # PKG_NODE_PATH - see the README.
-          pkg . --targets node20-linux-x64 --output dist/app
+          # pkg 5.8.1 is the latest release and only publishes node18 base
+          # binaries.  See the README for targeting a newer Node.js.
+          pkg . --targets node18-linux-x64 --output dist/app
           ls -la dist/app
+
+      - name: Smoke test the packaged binary
+        env:
+          PORT: '8198'
+          HKVM_DATA_DIR: ${{ runner.temp }}/hkvm-pkg-ci
+        run: |
+          chmod +x dist/app
+          ./dist/app &
+          PID=$!
+          for i in $(seq 1 30); do
+            if curl -fsS -o /dev/null "http://127.0.0.1:8198/login"; then break; fi
+            sleep 1
+          done
+          curl -fsS -o /dev/null "http://127.0.0.1:8198/login" || { echo "packaged binary did not start"; kill $PID; exit 1; }
+          echo "packaged binary started"
+          kill $PID
+
+      - name: Upload the binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: hkvm-panel-linux-x64
+          path: dist/app
+          if-no-files-found: error
