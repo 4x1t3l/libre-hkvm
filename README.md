@@ -80,8 +80,18 @@ npm run build          # -> dist/app
 ```
 
 `pkg` bundles `app.js` plus `views/**` and `public/**` into a single
-executable for `node22-linux-x64`. Add more targets by editing the `pkg`
-block in `package.json`.
+executable. The default target is `node20-linux-x64`, because `pkg` 5.8.1
+is the latest release and ships base binaries up to node20.
+
+To build for a newer Node.js you need a matching base binary and
+`PKG_NODE_PATH` pointing at it:
+
+```bash
+export PKG_NODE_PATH=/path/to/node22-base-binaries
+npm run build
+```
+
+Add more targets by editing the `pkg` block in `package.json`.
 
 ## Project layout
 
