@@ -1,0 +1,54 @@
+{
+  "name": "hopingboyz-vm-manager",
+  "version": "1.0.0",
+  "description": "Web-based VM Management Panel powered by Hopingboyz",
+  "main": "app.js",
+  "bin": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "nodemon app.js",
+    "build": "pkg . --targets node22-linux-x64 --output app",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "vm",
+    "qemu",
+    "kvm",
+    "virtualization",
+    "management"
+  ],
+  "author": "Hopingboyz",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.19.0",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "ejs": "^6.0.1",
+    "express": "^4.18.2",
+    "express-session": "^1.17.3",
+    "passport": "^0.7.0",
+    "passport-discord": "^0.1.4",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^5.1.6",
+    "ssh2": "^1.17.0",
+    "uuid": "^14.0.2",
+    "ws": "^8.14.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "pkg": {
+    "scripts": [
+      "app.js"
+    ],
+    "assets": [
+      "views/**/*",
+      "public/**/*"
+    ],
+    "targets": [
+      "node22-linux-x64"
+    ],
+    "outputPath": "dist"
+  }
+}

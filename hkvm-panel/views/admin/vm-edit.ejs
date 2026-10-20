@@ -1,0 +1,962 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0a0a0f">
+  <title><%= title || 'Edit VM - HKVM Panel' %></title>
+  <link rel="icon" href="<%= siteLogo %>" type="image/png">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link rel="stylesheet" href="/css/admin.css">
+  <style>
+    /* Fix for form-row grid in hardware tab */
+    .form-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+    @media (max-width: 768px) {
+      .form-row {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+<div class="admin-wrapper">
+
+  <%- include('../partials/admin/sidebar') %>
+
+  <div class="admin-main">
+    <%- include('../partials/admin/header') %>
+
+    <div class="admin-content">
+
+      <!-- Page Header -->
+      <div class="page-header">
+        <div class="page-title-section">
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 4px;">
+            <a href="/admin/vm/<%= vmId %>" style="color: var(--text-muted); text-decoration: none; font-size: 13px; display: flex; align-items: center; gap: 4px;">
+              <i class="fas fa-arrow-left"></i>
+              Back to VM
+            </a>
+          </div>
+          <h1 class="page-title">
+            <i class="fas fa-edit" style="color: #3B82F6;"></i>
+            Edit VM Configuration
+          </h1>
+          <p class="page-subtitle">VM ID: <%= vmId %> · <%= vm ? vm.vm_name : '' %></p>
+        </div>
+        <div class="page-actions">
+          <% if (vm && vm.status !== 'stopped') { %>
+          <div class="alert alert-warning" style="margin-bottom: 0; padding: 8px 14px;">
+            <i class="fas fa-exclamation-triangle" style="color: #F59E0B;"></i> VM must be <strong>stopped</strong> to edit configuration
+          </div>
+          <% } %>
+        </div>
+      </div>
+
+      <% if (vm && vm.status !== 'stopped') { %>
+      <div class="alert alert-warning">
+        <span class="alert-icon"><i class="fas fa-exclamation-triangle" style="color: #F59E0B;"></i></span>
+        <div class="alert-content">
+          <div class="alert-title">VM is Currently Running</div>
+          <div class="alert-message">Stop the VM before editing configuration. Some settings require a restart to take effect.</div>
+        </div>
+      </div>
+      <% } %>
+
+      <!-- Alert Area -->
+      <div id="editAlert" style="display: none; margin-bottom: 16px;"></div>
+
+      <form id="editForm" onsubmit="saveChanges(event)">
+
+        <div class="tabs" style="margin-bottom: 20px;">
+          <button type="button" class="tab-btn active" onclick="switchTab('basic')"><i class="fas fa-cog" style="color: #EC4899;"></i> Basic</button>
+          <button type="button" class="tab-btn" onclick="switchTab('hardware')"><i class="fas fa-microchip" style="color: #10B981;"></i> Hardware</button>
+          <button type="button" class="tab-btn" onclick="switchTab('network')"><i class="fas fa-network-wired" style="color: #3B82F6;"></i> Network</button>
+          <button type="button" class="tab-btn" onclick="switchTab('bios')"><i class="fas fa-microchip" style="color: #F59E0B;"></i> BIOS/Identity</button>
+        </div>
+
+        <!-- Basic Tab -->
+        <div class="tab-pane active" id="tab-basic">
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+            <div class="card">
+              <div class="card-header">
+                <div class="card-title"><i class="fas fa-list" style="color: #6366F1;"></i> General Settings</div>
+              </div>
+              <div class="card-body">
+                <div class="form-group">
+                  <label class="form-label">VM Name <span class="required">*</span></label>
+                  <input type="text" class="form-control" name="vm_name" value="<%= vm ? vm.vm_name : '' %>" 
+                    <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %> placeholder="VM Name">
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Hostname</label>
+                  <input type="text" class="form-control" name="hostname" value="<%= vm ? (vm.hostname || '') : '' %>"
+                    <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %> placeholder="Hostname">
+                </div>
+
+                <% if (user && user.role === 'admin') { %>
+                <div class="form-group">
+                  <label class="form-label">Assign Owner</label>
+                  <select class="form-control" name="owner_id" id="ownerSelect" <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %>>
+                    <option value="">— Keep Current Owner —</option>
+                  </select>
+                </div>
+                <% } %>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-header">
+                <div class="card-title"><i class="fas fa-bolt" style="color: #EC4899;"></i> VM Options</div>
+              </div>
+              <div class="card-body">
+                <div style="display: grid; gap: 16px;">
+                  <label class="toggle-switch">
+                    <input type="checkbox" class="toggle-input" name="enable_acpi" id="edit_acpi" value="1"
+                      <%= vm && vm.enable_acpi ? 'checked' : '' %>
+                      <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %>>
+                    <div class="toggle-track"><div class="toggle-thumb"></div></div>
+                    <div>
+                      <div class="toggle-label" style="font-size: 13px; color: var(--text-primary);">Enable ACPI</div>
+                      <div style="font-size: 11px; color: var(--text-muted);">Required for proper shutdown</div>
+                    </div>
+                  </label>
+
+                  <label class="toggle-switch">
+                    <input type="checkbox" class="toggle-input" name="enable_kvm" id="edit_kvm" value="1"
+                      <%= vm && vm.enable_kvm !== false ? 'checked' : '' %>
+                      <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %>>
+                    <div class="toggle-track"><div class="toggle-thumb"></div></div>
+                    <div>
+                      <div class="toggle-label" style="font-size: 13px; color: var(--text-primary);">KVM Acceleration</div>
+                      <div style="font-size: 11px; color: var(--text-muted);">Use hardware virtualization (if available)</div>
+                    </div>
+                  </label>
+                </div>
+                <div class="form-group" style="margin-top: 16px;">
+                  <label class="form-label">Extra QEMU Arguments</label>
+                  <textarea class="form-control" name="extra_args" rows="3" 
+                    <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %>
+                    style="font-family: monospace; font-size: 12px;" placeholder="Additional QEMU args..."><%= vm ? (vm.extra_args || '') : '' %></textarea>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Hardware Tab -->
+        <div class="tab-pane" id="tab-hardware">
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+            <div class="card">
+              <div class="card-header">
+                <div class="card-title"><i class="fas fa-cogs" style="color: #8B5CF6;"></i> CPU Configuration</div>
+              </div>
+              <div class="card-body">
+                <div class="form-row">
+                  <div class="form-group">
+                    <label class="form-label">Sockets</label>
+                    <input type="number" class="form-control" name="cpu_sockets" value="<%= vm ? (vm.cpu_sockets || 1) : 1 %>" min="1"
+                      <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %> onchange="updateEditCPU()">
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Cores</label>
+                    <input type="number" class="form-control" name="cpu_cores" value="<%= vm ? (vm.cpu_cores || 2) : 2 %>" min="1"
+                      <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %> onchange="updateEditCPU()">
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Threads</label>
+                    <input type="number" class="form-control" name="cpu_threads" value="<%= vm ? (vm.cpu_threads || 1) : 1 %>" min="1"
+                      <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %> onchange="updateEditCPU()" placeholder="e.g., 1, 2, 4, 8">
+                  </div>
+                </div>
+                <div class="form-group">
+                  <label class="form-label">CPU Model</label>
+                  <select class="form-control" name="cpu_model" id="edit_cpu_model" <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %>>
+                    <!-- Loaded dynamically -->
+                  </select>
+                </div>
+
+                <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border-subtle);">
+                  <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
+                    <input type="checkbox" class="form-check-input" id="enable_custom_cpu_name_edit" name="enable_custom_cpu_name_edit" <%= vm && vm.custom_cpu_name ? 'checked' : '' %> onchange="toggleEditCustomCPUName()" style="cursor: pointer; width: 20px; height: 20px;">
+                    <label for="enable_custom_cpu_name_edit" class="form-label" style="margin: 0; cursor: pointer; flex: 1;">
+                      <span style="display: inline-flex; align-items: center; gap: 8px; font-weight: 600; color: #6366F1;">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></svg>
+                        <span>Use Custom CPU Name</span>
+                        <span style="font-size: 11px; color: var(--text-muted); font-weight: normal; background: rgba(99, 102, 241, 0.1); padding: 2px 8px; border-radius: 4px;">Optional</span>
+                      </span>
+                    </label>
+                  </div>
+                  <div id="custom_cpu_name_section_edit" style="display: <%= vm && vm.custom_cpu_name ? 'block' : 'none' %>; padding: 14px; background: linear-gradient(135deg, rgba(99, 102, 241, 0.08) 0%, rgba(99, 102, 241, 0.03) 100%); border-radius: 8px; border: 1.5px solid rgba(99, 102, 241, 0.2);">
+                    <div class="form-group" style="margin-bottom: 0;">
+                      <label class="form-label" style="display: inline-flex; align-items: center; gap: 6px;">
+                        <span style="color:#6366F1;display:inline-flex;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></span>
+                        Custom CPU Model Name
+                      </label>
+                      <input type="text" class="form-control" name="custom_cpu_name" id="custom_cpu_name_edit" value="<%= vm ? (vm.custom_cpu_name || '') : '' %>" placeholder="e.g., Intel-Xeon-E5-2680v4, AMD-EPYC-7002" oninput="validateEditCustomCPUName()" style="margin-top: 8px;" <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %>>
+                      <div style="display: flex; gap: 8px; margin-top: 8px; font-size: 12px; color: var(--text-muted); align-items:center;">
+                        <span id="cpuNameValidEdit" style="color: #10B981; opacity: 0; display:inline-flex;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg></span>
+                        <span>Any characters accepted</span>
+                      </div>
+                      <div class="form-hint" style="margin-top: 8px; display: flex; align-items: flex-start; gap: 8px;">
+                        <span style="color:#F59E0B; margin-top: 2px; flex-shrink: 0; display:inline-flex;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></span>
+                        <span>
+                          <strong>Examples:</strong> Intel Xeon, AMD EPYC 7003, ThreadRipper PRO, Custom Lab CPU
+                          <br><strong>Tips:</strong> Use any format you want - spaces, special characters all allowed
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <!-- Hidden field for total CPU count -->
+                <input type="hidden" name="cpus" id="edit_cpus" value="<%= vm ? (vm.cpus || 2) : 2 %>">
+              </div>
+            </div>
+
+            <div>
+              <div class="card" style="margin-bottom: 16px;">
+                <div class="card-header">
+                  <div class="card-title"><i class="fas fa-memory" style="color: #10B981;"></i> Memory</div>
+                </div>
+                <div class="card-body">
+                  <div class="form-group" style="margin-bottom: 0;">
+                    <label class="form-label">RAM (MB) <span class="required">*</span></label>
+                    <input type="number" class="form-control" name="memory" value="<%= vm ? (vm.memory || 2048) : 2048 %>" min="1" step="1"
+                      <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %>>
+                  </div>
+                </div>
+              </div>
+              <div class="card">
+                <div class="card-header">
+                  <div class="card-title"><i class="fas fa-hdd" style="color: #06B6D4;"></i> Storage</div>
+                </div>
+                <div class="card-body">
+                  <div class="form-group" style="margin-bottom: 0;">
+                    <label class="form-label">Disk Size <span class="required">*</span></label>
+                    <input type="text" class="form-control" name="disk_size" value="<%= vm ? (vm.disk_size || '20G') : '20G' %>"
+                      placeholder="20G">
+                    <div class="form-hint">Format: 20G, 100G, 1T. Disk can be expanded or shrunk.</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card" style="margin-top: 16px;">
+                <div class="card-header">
+                  <div class="card-title"><i class="fas fa-user" style="color: #EC4899;"></i> Credentials</div>
+                </div>
+                <div class="card-body">
+                  <div class="form-group">
+                    <label class="form-label">Username <span class="required">*</span></label>
+                    <input type="text" class="form-control" name="username" value="<%= vm ? (vm.username || '') : '' %>"
+                      <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %> placeholder="ubuntu, debian, root, etc.">
+                    <div class="form-hint">Cloud-init will be regenerated when changed.</div>
+                  </div>
+
+                  <div class="form-group" style="margin-bottom: 0;">
+                    <label class="form-label">Password <span class="required">*</span></label>
+                    <input type="password" class="form-control" name="password" value="<%= vm ? (vm.password || '') : '' %>"
+                      <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %> placeholder="SSH password">
+                    <div class="form-hint">Cloud-init will be regenerated when changed. Used for SSH authentication.</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Network Tab -->
+        <div class="tab-pane" id="tab-network">
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+            <div class="card">
+              <div class="card-header">
+                <div class="card-title"><i class="fas fa-ethernet" style="color: #3B82F6;"></i> IPv4 Configuration</div>
+              </div>
+              <div class="card-body">
+                <div class="form-group">
+                  <label class="form-label">Network Type</label>
+                  <select class="form-control" name="network_type" id="networkTypeSelect" <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %> onchange="updateNetworkFields()">
+                    <option value="nat" <%= vm && vm.network_type === 'nat' ? 'selected' : '' %>>NAT (User Mode)</option>
+                    <option value="static_public" <%= vm && vm.network_type === 'static_public' ? 'selected' : '' %>>Static Public IPv4</option>
+                  </select>
+                </div>
+
+                <div id="staticIpFields" style="display: none;">
+                  <div class="form-group">
+                    <label class="form-label">Bridge Device <span class="required">*</span></label>
+                    <input type="text" class="form-control" name="bridge_device" value="<%= vm ? (vm.bridge_device || 'vmbr0') : 'vmbr0' %>"
+                      id="edit_bridge_device"
+                      <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %> placeholder="vmbr0">
+                    <div class="form-hint">Virtual bridge interface (e.g., vmbr0, vmbr1)</div>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">IPv4 Address <span class="required">*</span></label>
+                    <input type="text" class="form-control" name="ipv4_address" value="<%= vm ? (vm.ipv4_address || '') : '' %>"
+                      <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %> placeholder="e.g., 203.0.113.100">
+                    <div class="form-hint">Your public IP address</div>
+                  </div>
+                  <div class="form-row">
+                    <div class="form-group">
+                      <label class="form-label">Gateway <span class="required">*</span></label>
+                      <input type="text" class="form-control" name="ipv4_gateway" value="<%= vm ? (vm.ipv4_gateway || vm.gateway || '') : '' %>"
+                        id="edit_ipv4_gateway"
+                        <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %> placeholder="203.0.113.1">
+                      <div class="form-hint">Default gateway IP</div>
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label">Netmask (CIDR) <span class="required">*</span></label>
+                      <input type="number" class="form-control" name="ipv4_netmask" value="<%= vm ? (vm.ipv4_netmask || vm.netmask || '24') : '24' %>"
+                        id="edit_ipv4_netmask"
+                        <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %> min="1" placeholder="24">
+                      <div class="form-hint">CIDR notation (e.g., 24)</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="form-group" style="margin-bottom: 0;">
+                  <label class="form-label">DNS Servers</label>
+                  <input type="text" class="form-control" name="dns_primary" value="<%= vm ? (vm.dns_primary || '8.8.8.8') : '8.8.8.8' %>"
+                    id="edit_dns_primary"
+                    <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %> placeholder="8.8.8.8">
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <div class="card" style="margin-bottom: 16px; display: none;" id="portForwardingCard">
+                <div class="card-header">
+                  <div class="card-title"><i class="fas fa-plug" style="color: #EC4899;"></i> Port Forwarding</div>
+                </div>
+                <div class="card-body">
+                  <div style="padding: 12px; background: rgba(59, 130, 246, 0.06); border-radius: 8px; border: 1px solid rgba(59, 130, 246, 0.2); margin-bottom: 16px;">
+                    <div style="font-size: 12px; color: var(--text-muted);">
+                      <strong>Note:</strong> Port Forwarding is only available for NAT (User Mode) network type. For Static Public IPv4, ports are not forwarded.
+                    </div>
+                  </div>
+                  <div class="form-row">
+                    <div class="form-group">
+                      <label class="form-label">SSH Port</label>
+                      <input type="number" class="form-control" name="ssh_port_static" value="<%= vm ? (vm.ssh_port || vm.ssh_port_static || 22) : 22 %>"
+                        <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %> min="1">
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card" style="margin-bottom: 16px; display: none;" id="ipv6Fields">
+                <div class="card-header">
+                  <div class="card-title"><i class="fas fa-globe" style="color: #06B6D4;"></i> IPv6</div>
+                </div>
+                <div class="card-body">
+                  <div class="form-group">
+                    <label class="form-label">IPv6 Address</label>
+                    <input type="text" class="form-control" name="ipv6_address" value="<%= vm ? (vm.ipv6_address || '') : '' %>"
+                      <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %> placeholder="Optional IPv6 address">
+                  </div>
+                  <div class="form-group" style="margin-bottom: 0;">
+                    <label class="form-label">IPv6 Gateway</label>
+                    <input type="text" class="form-control" name="ipv6_gateway" value="<%= vm ? (vm.ipv6_gateway || '') : '' %>"
+                      <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %> placeholder="Optional IPv6 gateway">
+                  </div>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card-header">
+                  <div class="card-title"><i class="fas fa-sitemap" style="color: #F59E0B;"></i> MAC & VLAN</div>
+                </div>
+                <div class="card-body">
+                  <div class="form-group">
+                    <label class="form-label">MAC Address</label>
+                    <input type="text" class="form-control" name="mac_address" value="<%= vm ? (vm.mac_address || '') : '' %>"
+                      <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %> placeholder="Auto-generated" style="font-family: monospace;">
+                  </div>
+                  <div class="form-group" style="margin-bottom: 0;">
+                    <label class="form-label">VLAN ID</label>
+                    <input type="number" class="form-control" name="vlan_id" value="<%= vm ? (vm.vlan_id || '') : '' %>"
+                      <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %> placeholder="Optional VLAN tag">
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- BIOS Tab -->
+        <div class="tab-pane" id="tab-bios">
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+            <div class="card">
+              <div class="card-header">
+                <div class="card-title"><i class="fas fa-sliders-h" style="color: #8B5CF6;"></i> SMBIOS Configuration</div>
+              </div>
+              <div class="card-body">
+                <div class="form-group">
+                  <label class="form-label">Manufacturer</label>
+                  <div style="display: grid; gap: 8px;">
+                    <select class="form-control" name="smbios_manufacturer" id="edit_smbios_manufacturer" onchange="toggleCustomManufacturerEdit()" <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %>>
+                      <% ['QEMU', 'Proxmox', 'Red Hat', 'VirtualBox', 'Microsoft Corporation', 'Dell Inc.', 'HP Inc.', 'Lenovo'].forEach(m => { %>
+                      <option value="<%= m %>" <%= vm && vm.smbios_manufacturer === m ? 'selected' : '' %>><%= m %></option>
+                      <% }); %>
+                      <option value="custom" <%= vm && !['QEMU', 'Proxmox', 'Red Hat', 'VirtualBox', 'Microsoft Corporation', 'Dell Inc.', 'HP Inc.', 'Lenovo'].includes(vm.smbios_manufacturer) ? 'selected' : '' %>>Custom...</option>
+                    </select>
+                    <input type="text" class="form-control" name="custom_manufacturer_edit" id="custom_manufacturer_edit" value="<%= vm && vm.smbios_manufacturer && !['QEMU', 'Proxmox', 'Red Hat', 'VirtualBox', 'Microsoft Corporation', 'Dell Inc.', 'HP Inc.', 'Lenovo'].includes(vm.smbios_manufacturer) ? vm.smbios_manufacturer : '' %>" placeholder="Enter custom manufacturer name" style="<%= vm && vm.smbios_manufacturer && !['QEMU', 'Proxmox', 'Red Hat', 'VirtualBox', 'Microsoft Corporation', 'Dell Inc.', 'HP Inc.', 'Lenovo'].includes(vm.smbios_manufacturer) ? 'display: block; border-color: #6366F1;' : 'display: none; border-color: #6366F1;' %>" <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %>>
+                  </div>
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Product Name</label>
+                  <div style="display: grid; gap: 8px;">
+                    <select class="form-control" name="smbios_product" id="edit_smbios_product" onchange="toggleCustomProductEdit()" <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %>>
+                      <% ['KVM Virtual Machine', 'Standard PC', 'RHEL Guest', 'VirtualBox', 'Virtual Machine', 'Cloud Instance'].forEach(p => { %>
+                      <option value="<%= p %>" <%= vm && vm.smbios_product === p ? 'selected' : '' %>><%= p %></option>
+                      <% }); %>
+                      <option value="custom" <%= vm && !['KVM Virtual Machine', 'Standard PC', 'RHEL Guest', 'VirtualBox', 'Virtual Machine', 'Cloud Instance'].includes(vm.smbios_product) ? 'selected' : '' %>>Custom...</option>
+                    </select>
+                    <input type="text" class="form-control" name="custom_product_edit" id="custom_product_edit" value="<%= vm && vm.smbios_product && !['KVM Virtual Machine', 'Standard PC', 'RHEL Guest', 'VirtualBox', 'Virtual Machine', 'Cloud Instance'].includes(vm.smbios_product) ? vm.smbios_product : '' %>" placeholder="Enter custom product name" style="<%= vm && vm.smbios_product && !['KVM Virtual Machine', 'Standard PC', 'RHEL Guest', 'VirtualBox', 'Virtual Machine', 'Cloud Instance'].includes(vm.smbios_product) ? 'display: block; border-color: #6366F1;' : 'display: none; border-color: #6366F1;' %>" <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %>>
+                  </div>
+                </div>
+                <div class="form-row">
+                  <div class="form-group">
+                    <label class="form-label">BIOS Version</label>
+                    <input type="text" class="form-control" name="smbios_version" value="<%= vm ? (vm.smbios_version || '1.0') : '1.0' %>"
+                      <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %>>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Serial Number</label>
+                    <input type="text" class="form-control" name="smbios_serial" value="<%= vm ? (vm.smbios_serial || '') : '' %>"
+                      <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %> placeholder="Auto-generated">
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-header">
+                <div class="card-title"><i class="fas fa-server" style="color: #6366F1;"></i> Board / Product</div>
+              </div>
+              <div class="card-body">
+                <div class="form-group">
+                  <label class="form-label">Machine Type</label>
+                  <select class="form-control" name="machine_type" <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %>>
+                    <optgroup label="x86-64 / i386">
+                      <option value="pc" <%= vm && vm.machine_type === 'pc' ? 'selected' : '' %>>PC (i440fx - Standard, Legacy)</option>
+                      <option value="q35" <%= vm && vm.machine_type === 'q35' ? 'selected' : '' %>>Q35 (ICH9 - Modern, Recommended)</option>
+                      <option value="microvm" <%= vm && vm.machine_type === 'microvm' ? 'selected' : '' %>>MicroVM (Minimal, Fast Boot)</option>
+                    </optgroup>
+                    <optgroup label="ARM">
+                      <option value="virt" <%= vm && vm.machine_type === 'virt' ? 'selected' : '' %>>Virtual (ARM Generic Platform)</option>
+                      <option value="versatilepb" <%= vm && vm.machine_type === 'versatilepb' ? 'selected' : '' %>>Versatile Platform Baseboard</option>
+                      <option value="raspi2" <%= vm && vm.machine_type === 'raspi2' ? 'selected' : '' %>>Raspberry Pi 2</option>
+                      <option value="raspi3" <%= vm && vm.machine_type === 'raspi3' ? 'selected' : '' %>>Raspberry Pi 3</option>
+                    </optgroup>
+                    <optgroup label="Enterprise">
+                      <option value="pseries" <%= vm && vm.machine_type === 'pseries' ? 'selected' : '' %>>POWER Series (PowerPC)</option>
+                      <option value="s390-ccw-virtio" <%= vm && vm.machine_type === 's390-ccw-virtio' ? 'selected' : '' %>>IBM System Z (s390x)</option>
+                    </optgroup>
+                  </select>
+                  <div class="form-hint" style="font-size: 12px; color: var(--text-muted); margin-top: 6px;">
+                    <strong>x86-64:</strong> PC for legacy OS, Q35 for modern OS, MicroVM for minimal overhead
+                  </div>
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Board Name</label>
+                  <input type="text" class="form-control" name="board_name" value="<%= vm ? (vm.board_name || 'Main-Board') : 'Main-Board' %>"
+                    <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %>>
+                </div>
+                <div class="form-group" style="margin-bottom: 0;">
+                  <label class="form-label">Product Name</label>
+                  <input type="text" class="form-control" name="product_name" value="<%= vm ? (vm.product_name || 'Virtual Machine') : 'Virtual Machine' %>"
+                    <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %>>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Action Bar -->
+        <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 24px; padding: 16px; background: var(--bg-card); border-radius: var(--radius-lg); border: 1px solid var(--border-card);">
+          <a href="/admin/vm/<%= vmId %>" class="btn btn-ghost">Cancel</a>
+          <button type="button" class="btn btn-danger" id="reinstallBtn" onclick="showReinstallModal()" <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %>>
+            <i class="fas fa-sync-alt"></i>
+            Reinstall VM
+          </button>
+          <button type="submit" class="btn btn-primary" id="saveBtn" <%= vm && vm.status !== 'stopped' ? 'disabled' : '' %>>
+            <i class="fas fa-save"></i>
+            Save Changes
+          </button>
+        </div>
+      </form>
+
+    </div>
+
+    <%- include('../partials/admin/footer') %>
+  </div>
+</div>
+
+<script>
+const vmId = <%= vmId %>;
+
+// Reinstall Modal Functions
+function showReinstallModal() {
+  const modal = document.getElementById('reinstallModal');
+  if (!modal) {
+    createReinstallModal();
+    setTimeout(() => {
+      const newModal = document.getElementById('reinstallModal');
+      if (newModal) {
+        newModal.classList.add('show');
+      }
+    }, 10);
+  } else {
+    modal.classList.add('show');
+  }
+}
+
+function closeReinstallModal() {
+  const modal = document.getElementById('reinstallModal');
+  if (modal) modal.classList.remove('show');
+}
+
+function createReinstallModal() {
+  const modal = document.createElement('div');
+  modal.id = 'reinstallModal';
+  modal.className = 'modal-overlay';
+  
+  modal.innerHTML = `
+    <div class="modal-content" style="background-color: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-lg); width: 90%; max-width: 500px; padding: 0; box-shadow: 0 10px 40px rgba(0,0,0,0.3); margin: auto;">
+      <!-- Header -->
+      <div style="padding: 20px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center;">
+        <h2 style="margin: 0; color: var(--text-primary); font-size: 18px; font-weight: 600;">
+          <i class="fas fa-sync-alt" style="color: #F59E0B; margin-right: 8px;"></i>
+          Reinstall VM
+        </h2>
+        <button type="button" onclick="closeReinstallModal()" style="background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 20px;">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
+      
+      <!-- Body -->
+      <div style="padding: 20px;">
+        <div class="alert alert-warning" style="margin-bottom: 16px;">
+          <i class="fas fa-exclamation-triangle" style="color: #F59E0B;"></i>
+          <strong>Warning!</strong> This will delete the VM disk and cloud-init seed. Logs will be kept for audit trail.
+        </div>
+        
+        <form id="reinstallForm" onsubmit="performReinstall(event)">
+          <div class="form-group">
+            <label class="form-label" style="font-weight: 600;">Select OS Template <span class="required">*</span></label>
+            <select class="form-control" name="new_os_template" id="reinstall_template" required style="margin-bottom: 12px;">
+              <option value="">— Choose Template —</option>
+            </select>
+            <div class="form-hint" style="color: var(--text-muted);">Select a new OS to reinstall. Keep current or choose different.</div>
+          </div>
+          
+          <div class="form-group">
+            <label class="form-label" style="font-weight: 600;">New Username (Optional)</label>
+            <input type="text" class="form-control" name="new_username" id="reinstall_username" placeholder="Leave blank to keep current">
+            <div class="form-hint">Default user for cloud-init templates (ubuntu, debian, root, etc.)</div>
+          </div>
+          
+          <div class="form-group">
+            <label class="form-label" style="font-weight: 600;">New Password (Optional)</label>
+            <input type="password" class="form-control" name="new_password" id="reinstall_password" placeholder="Leave blank to keep current">
+            <div class="form-hint">SSH password for the new installation</div>
+          </div>
+          
+          <label class="toggle-switch" style="margin: 16px 0;">
+            <input type="checkbox" class="toggle-input" name="confirm" id="reinstall_confirm" required>
+            <div class="toggle-track"><div class="toggle-thumb"></div></div>
+            <div>
+              <div class="toggle-label" style="font-size: 13px; color: var(--text-primary);">I understand this will delete all VM data</div>
+            </div>
+          </label>
+        </form>
+      </div>
+      
+      <!-- Footer -->
+      <div style="padding: 16px; border-top: 1px solid var(--border-color); display: flex; justify-content: flex-end; gap: 8px;">
+        <button type="button" class="btn btn-ghost" onclick="closeReinstallModal()">Cancel</button>
+        <button type="button" class="btn btn-danger" id="confirmReinstallBtn" onclick="document.getElementById('reinstallForm').dispatchEvent(new Event('submit'))">
+          <i class="fas fa-sync-alt"></i>
+          Reinstall
+        </button>
+      </div>
+    </div>
+  `;
+  
+  document.body.appendChild(modal);
+  
+  // Load templates into select
+  loadTemplatesForReinstall();
+  
+  // Close on background click
+  modal.addEventListener('click', function(e) {
+    if (e.target === modal) closeReinstallModal();
+  });
+}
+
+async function loadTemplatesForReinstall() {
+  try {
+    const res = await fetch('/api/os-templates');
+    if (!res.ok) throw new Error('Failed to load templates');
+    
+    const templates = await res.json();
+    const select = document.getElementById('reinstall_template');
+    if (!select) return;
+    
+    select.innerHTML = '<option value="">— Choose Template —</option>';
+    
+    // Add all templates (both built-in and custom) from API
+    if (templates && typeof templates === 'object') {
+      Object.entries(templates).forEach(([key, template]) => {
+        const opt = document.createElement('option');
+        opt.value = key;
+        
+        // Show template name with indicator if custom
+        const displayName = template.name || template.template_name || key;
+        const isCustom = template.is_custom ? ' (Custom)' : '';
+        opt.textContent = `${displayName}${isCustom}`;
+        
+        select.appendChild(opt);
+      });
+    }
+  } catch (e) {
+    console.error('Failed to load templates:', e.message);
+    if (typeof showToast === 'function') {
+      showToast('Failed to load templates', 'error');
+    } else {
+      alert('Failed to load templates: ' + e.message);
+    }
+  }
+}
+
+async function performReinstall(e) {
+  e.preventDefault();
+  
+  const btn = document.getElementById('confirmReinstallBtn');
+  const form = document.getElementById('reinstallForm');
+  
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Reinstalling...';
+  
+  try {
+    const fd = new FormData(form);
+    const data = {
+      new_os_template: fd.get('new_os_template'),
+      new_username: fd.get('new_username') || undefined,
+      new_password: fd.get('new_password') || undefined,
+      confirm: fd.get('confirm') === 'on'
+    };
+    
+    if (!data.new_os_template) {
+      throw new Error('Please select an OS template');
+    }
+    
+    if (!data.confirm) {
+      throw new Error('Please confirm the reinstall');
+    }
+    
+    const res = await fetch(`/api/vms/${vmId}/reinstall`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    
+    const result = await res.json();
+    
+    if (res.ok && result.success) {
+      if (typeof showToast === 'function') {
+        showToast(result.message, 'success');
+      } else {
+        alert(result.message);
+      }
+      closeReinstallModal();
+      
+      // Reload VM page after a short delay
+      setTimeout(() => {
+        location.href = `/admin/vm/${vmId}`;
+      }, 1500);
+    } else {
+      throw new Error(result.error || 'Reinstall failed');
+    }
+  } catch (e) {
+    if (typeof showToast === 'function') {
+      showToast('Reinstall error: ' + e.message, 'error');
+    } else {
+      alert('Reinstall error: ' + e.message);
+    }
+    btn.innerHTML = '<i class="fas fa-sync-alt"></i> Reinstall';
+    btn.disabled = false;
+  }
+}
+
+// Load CPU models
+async function loadCPUModels() {
+  try {
+    const res = await fetch('/api/cpu-models');
+    if (!res.ok) return;
+    const models = await res.json();
+    const sel = document.getElementById('edit_cpu_model');
+    if (!sel) return;
+    const currentModel = '<%= vm ? vm.cpu_model : "host" %>';
+    sel.innerHTML = Object.entries(models).map(([key, m]) =>
+      `<option value="${key}" ${key === currentModel ? 'selected' : ''}>${m.name} — ${m.description}</option>`
+    ).join('');
+  } catch(e) {}
+}
+
+// Update Network Fields visibility based on Network Type
+function updateNetworkFields() {
+    const networkType = document.getElementById('networkTypeSelect')?.value;
+    const staticFields = document.getElementById('staticIpFields');
+    const ipv6Fields = document.getElementById('ipv6Fields');
+    const portCard = document.getElementById('portForwardingCard');
+    
+    if (staticFields) {
+      staticFields.style.display = (networkType === 'static_public') ? 'block' : 'none';
+      if (networkType === 'nat') {
+        const ipv4AddressInput = document.querySelector('input[name="ipv4_address"]');
+        const ipv4GatewayInput = document.querySelector('input[name="ipv4_gateway"]');
+        const ipv4NetmaskInput = document.querySelector('input[name="ipv4_netmask"]');
+        if (ipv4AddressInput) ipv4AddressInput.value = '';
+        if (ipv4GatewayInput) ipv4GatewayInput.value = '';
+        if (ipv4NetmaskInput) ipv4NetmaskInput.value = '';
+      }
+    }
+    
+    if (portCard) {
+      portCard.style.display = (networkType === 'nat') ? 'block' : 'none';
+    }
+    
+    if (ipv6Fields) {
+      // Hide IPv6 fields (no longer supported)
+      ipv6Fields.style.display = 'none';
+    }
+}
+
+// Load users for owner assignment
+<% if (user && user.role === 'admin') { %>
+async function loadUsers() {
+  try {
+    const res = await fetch('/api/users/list');
+    if (!res.ok) return;
+    const users = await res.json();
+    const sel = document.getElementById('ownerSelect');
+    if (!sel) return;
+    users.forEach(u => {
+      const opt = document.createElement('option');
+      opt.value = u.id;
+      opt.textContent = `${u.username} (${u.role})`;
+      if (u.id === <%= vm ? vm.owner_id : 0 %>) opt.selected = true;
+      sel.appendChild(opt);
+    });
+  } catch(e) {}
+}
+loadUsers();
+<% } %>
+
+// Tab switching
+function switchTab(tab) {
+  const tabs = ['basic', 'hardware', 'network', 'bios'];
+  const tabIdx = tabs.indexOf(tab);
+  if (tabIdx === -1) return; // Invalid tab
+  
+  // Update all tab buttons and panes
+  document.querySelectorAll('.tab-btn').forEach((btn, idx) => {
+    btn.classList.toggle('active', idx === tabIdx);
+  });
+  
+  document.querySelectorAll('.tab-pane').forEach(pane => {
+    pane.classList.toggle('active', pane.id === `tab-${tab}`);
+  });
+}
+
+// Toggle custom manufacturer field in edit
+function toggleCustomManufacturerEdit() {
+  const select = document.getElementById('edit_smbios_manufacturer');
+  const input = document.getElementById('custom_manufacturer_edit');
+  
+  if (select.value === 'custom') {
+    input.style.display = 'block';
+    input.required = true;
+    if (!input.disabled) setTimeout(() => input.focus(), 100);
+  } else {
+    input.style.display = 'none';
+    input.required = false;
+    input.value = '';
+  }
+}
+
+// Toggle custom product field in edit
+function toggleCustomProductEdit() {
+  const select = document.getElementById('edit_smbios_product');
+  const input = document.getElementById('custom_product_edit');
+  
+  if (select.value === 'custom') {
+    input.style.display = 'block';
+    input.required = true;
+    if (!input.disabled) setTimeout(() => input.focus(), 100);
+  } else {
+    input.style.display = 'none';
+    input.required = false;
+    input.value = '';
+  }
+}
+
+// Toggle custom CPU name field in edit
+function toggleEditCustomCPUName() {
+  const checkbox = document.getElementById('enable_custom_cpu_name_edit');
+  const section = document.getElementById('custom_cpu_name_section_edit');
+  if (checkbox && section) {
+    if (checkbox.checked) {
+      section.style.display = 'block';
+    } else {
+      section.style.display = 'none';
+      const input = document.getElementById('custom_cpu_name_edit');
+      if (input) input.value = '';
+    }
+  }
+}
+
+// Validate custom CPU name in edit
+function validateEditCustomCPUName() {
+  const input = document.getElementById('custom_cpu_name_edit');
+  const validIcon = document.getElementById('cpuNameValidEdit');
+  if (input && input.value.trim() && validIcon) {
+    validIcon.style.opacity = '1';
+  } else if (validIcon) {
+    validIcon.style.opacity = '0';
+  }
+}
+
+// Save Changes
+async function saveChanges(e) {
+  e.preventDefault();
+  const btn = document.getElementById('saveBtn');
+  const alert = document.getElementById('editAlert');
+  
+  btn.classList.add('loading');
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+  btn.disabled = true;
+  alert.style.display = 'none';
+  
+  try {
+    const form = document.getElementById('editForm');
+    const fd = new FormData(form);
+    const data = {};
+    fd.forEach((v, k) => { data[k] = v; });
+    
+    // Calculate total CPUs from sockets * cores * threads
+    const sockets = parseInt(data.cpu_sockets) || 1;
+    const cores = parseInt(data.cpu_cores) || 2;
+    const threads = parseInt(data.cpu_threads) || 1;
+    data.cpus = sockets * cores * threads;
+    
+    // Handle checkboxes
+    data.enable_kvm = 1; // Always enable KVM (removed toggle)
+    data.enable_acpi = document.getElementById('edit_acpi')?.checked ? 1 : 0;
+    
+    // Handle custom Manufacturer - override from select field
+    const manufacturerSelect = document.getElementById('edit_smbios_manufacturer');
+    if (manufacturerSelect) {
+      if (manufacturerSelect.value === 'custom') {
+        const customManuf = document.getElementById('custom_manufacturer_edit')?.value.trim();
+        data.smbios_manufacturer = customManuf || ''; // Use custom field value if selected
+      } else {
+        data.smbios_manufacturer = manufacturerSelect.value; // Use select dropdown value
+      }
+    }
+    
+    // Remove the custom_manufacturer_edit field - not needed in API
+    delete data.custom_manufacturer_edit;
+    
+    // Handle custom Product - override from select field
+    const productSelect = document.getElementById('edit_smbios_product');
+    if (productSelect) {
+      if (productSelect.value === 'custom') {
+        const customProd = document.getElementById('custom_product_edit')?.value.trim();
+        data.smbios_product = customProd || ''; // Use custom field value if selected
+      } else {
+        data.smbios_product = productSelect.value; // Use select dropdown value
+      }
+    }
+    
+    // Remove the custom_product_edit field - not needed in API
+    delete data.custom_product_edit;
+    
+    const res = await fetch(`/api/vms/${vmId}/edit`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    
+    console.log('[vm-edit saveChanges] Data sent to API:', data);
+    console.log('[vm-edit saveChanges] disk_size value:', data.disk_size || 'UNDEFINED');
+    
+    const result = await res.json();
+    
+    if (res.ok && result.success) {
+      alert.className = 'alert alert-success';
+      alert.innerHTML = `<span class="alert-icon"><i class="fas fa-check-circle" style="color: #10B981;"></i></span><span>✓ Configuration saved & cloud-init seed regenerated! Changes apply on next VM boot.</span>`;
+      alert.style.display = 'flex';
+      if (typeof showToast === 'function') {
+        showToast('VM saved with updated cloud-init', 'success');
+      }
+      
+      btn.innerHTML = `
+        <i class="fas fa-save"></i>
+        Save Changes
+      `;
+      btn.classList.remove('loading');
+      btn.disabled = false;
+      
+      // Reload page after 1.5 seconds to show updated values
+      setTimeout(() => {
+        location.reload();
+      }, 1500);
+    } else {
+      throw new Error(result.error || 'Failed to save');
+    }
+  } catch(e) {
+    alert.className = 'alert alert-error';
+    alert.innerHTML = `<span class="alert-icon"><i class="fas fa-times-circle" style="color: #EF4444;"></i></span><span>${e.message}</span>`;
+    alert.style.display = 'flex';
+    if (typeof showToast === 'function') {
+      showToast('Save failed: ' + e.message, 'error');
+    } else {
+      alert('Save failed: ' + e.message);
+    }
+    
+    btn.innerHTML = `
+      <i class="fas fa-save"></i>
+      Save Changes
+    `;
+    btn.classList.remove('loading');
+    btn.disabled = false;
+  }
+}
+
+// Update CPU count based on sockets, cores, threads
+function updateEditCPU() {
+  const sockets = parseInt(document.querySelector('input[name="cpu_sockets"]')?.value || 1);
+  const cores = parseInt(document.querySelector('input[name="cpu_cores"]')?.value || 2);
+  const threads = parseInt(document.querySelector('input[name="cpu_threads"]')?.value || 1);
+  const totalCPU = sockets * cores * threads;
+  const cpusField = document.getElementById('edit_cpus');
+  if (cpusField) cpusField.value = totalCPU;
+}
+
+loadCPUModels();
+updateNetworkFields();
+
+// Listen for network type changes
+document.addEventListener('change', (e) => {
+  if (e.target && e.target.name === 'network_type') {
+    updateNetworkFields();
+  }
+});
+</script>
+</body>
+</html>
+

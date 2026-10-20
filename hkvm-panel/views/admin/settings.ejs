@@ -1,0 +1,842 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
+  <meta name="theme-color" content="#0a0a0f">
+  <title><%= title || 'Settings - HKVM Panel' %></title>
+  <link rel="icon" href="<%= siteLogo %>" type="image/png">
+  <link rel="stylesheet" href="/css/admin.css">
+  <style>
+    @keyframes subtlePulse { 0%{opacity:.7} 50%{opacity:1} 100%{opacity:.7} }
+    .dynamic-pulse { animation: subtlePulse 2.8s ease-in-out infinite; }
+    .hover-lift { transition: transform 0.2s ease, box-shadow 0.2s ease; }
+    .hover-lift:hover { transform: translateY(-2px); box-shadow: 0 8px 16px rgba(0,0,0,0.08); }
+    .badge-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #10b981; margin-right: 6px; }
+    
+    .tabs { display: flex; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .tab-btn { white-space: nowrap; flex-shrink: 0; }
+    
+    .settings-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 16px 0; border-bottom: 1px solid var(--border-subtle); flex-wrap: wrap; }
+    .settings-row-info { flex: 1; min-width: 200px; }
+    .settings-row-control { flex: 1; min-width: 220px; }
+    
+    @media (max-width: 768px) {
+      .settings-row { flex-direction: column; gap: 12px; }
+      .settings-row-control { width: 100%; }
+      .page-header { flex-direction: column !important; gap: 12px; }
+      .page-actions { width: 100%; }
+      .tabs { gap: 4px; }
+      .tab-btn { font-size: 12px; padding: 8px 12px !important; }
+      .settings-section-body { padding: 12px 0 !important; }
+      .card { margin-bottom: 16px !important; }
+      .form-control { width: 100%; }
+      .form-group { margin-bottom: 12px !important; }
+      .modal { width: 95vw !important; max-width: 95vw !important; }
+    }
+    
+    @media (max-width: 480px) {
+      .page-title { font-size: 18px !important; }
+      .tab-btn { font-size: 11px; padding: 6px 10px !important; }
+      .settings-row-label { font-size: 13px; }
+      .settings-row-desc { font-size: 11px; }
+      .tabs { gap: 2px; }
+    }
+  </style>
+</head>
+<body>
+<div class="admin-wrapper">
+  <%- include('../partials/admin/sidebar') %>
+
+  <div class="admin-main">
+    <%- include('../partials/admin/header') %>
+
+    <div class="admin-content">
+
+      <!-- Page Header -->
+      <div class="page-header">
+        <div class="page-title-section">
+          <h1 class="page-title" style="display: flex; align-items: center; gap: 10px;">
+            <span class="title-icon" style="color: var(--accent-primary);">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+              </svg>
+            </span>
+            System Settings
+          </h1>
+          <p class="page-subtitle" style="display: flex; align-items: center; gap: 8px;">
+            <span class="dynamic-pulse" style="background: var(--accent-green); width: 8px; height: 8px; border-radius: 50%;"></span>
+            Configure HKVM Panel preferences · live sync
+          </p>
+        </div>
+        <div class="page-actions">
+          <button class="btn btn-primary hover-lift" onclick="saveAllSettings()" style="display: flex; align-items: center; gap: 8px;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+              <polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline>
+            </svg>
+            Save All Settings
+          </button>
+        </div>
+      </div>
+
+      <div id="settingsAlert" style="display: none; margin-bottom: 16px;"></div>
+
+      <!-- Tab Buttons (correct order: General, Branding, Security, System, Discord, About) -->
+      <div class="tabs" style="gap: 6px; flex-wrap: wrap;">
+        <button class="tab-btn active" onclick="switchTab('general')" style="display: flex; align-items: center; gap: 6px;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          General
+        </button>
+        <button class="tab-btn" onclick="switchTab('branding')" style="display: flex; align-items: center; gap: 6px;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg>
+          Branding
+        </button>
+        <button class="tab-btn" onclick="switchTab('security')" style="display: flex; align-items: center; gap: 6px;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+          Security
+        </button>
+        <button class="tab-btn" onclick="switchTab('system')" style="display: flex; align-items: center; gap: 6px;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3"/></svg>
+          System
+        </button>
+        <button class="tab-btn" onclick="switchTab('discord')" style="display: flex; align-items: center; gap: 6px;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="color: #5865F2;">
+            <path d="M20.317 4.3632a19.791 19.791 0 00-4.885-1.515a.074.074 0 00-.079.0366c-.211.3648-.444.8384-.607 1.2144a18.27 18.27 0 00-5.487 0c-.163-.3776-.385-.8496-.607-1.2144a.077.077 0 00-.079-.0365c-1.751.289-3.436.906-4.884 1.515a.07.07 0 00-.032.0277C1.533 8.93.013 12.3928 1.191 15.7839a.076.076 0 00.029.0335c2.409 1.796 4.776 2.894 7.102 3.622a.077.077 0 00.084-.0276c.462-.6392.873-1.3135 1.226-2.0137a.073.073 0 00-.041-.1008c-.663-.2565-1.289-.5666-1.88-.9235a.075.075 0 01-.008-.1242c.126-.0947.252-.1938.372-.2923a.072.072 0 01.075-.0102c3.928 1.7898 8.183 1.7898 12.061 0a.073.073 0 01.075.009c.12.099.246.1991.373.2924a.075.075 0 01-.006.1242c-.59.3569-1.216.6674-1.88.9235a.073.073 0 00-.041.1008c.353.6994.764 1.3745 1.226 2.0137a.076.076 0 00.084.0276c2.327-.7285 4.694-1.8386 7.102-3.6221a.077.077 0 00.03-.0334c1.278-3.4668-.213-6.9301-1.798-9.7839a.070.070 0 00-.031-.0277zM8.02 13.2823c-.842 0-1.54-.7734-1.54-1.7244c0-.951.686-1.7244 1.54-1.7244c.856 0 1.551.7734 1.54 1.7244c0 .951-.686 1.7244-1.54 1.7244zm7.973 0c-.842 0-1.54-.7734-1.54-1.7244c0-.951.686-1.7244 1.54-1.7244c.856 0 1.551.7734 1.54 1.7244c0 .951-.684 1.7244-1.54 1.7244z"/>
+          </svg>
+          Discord
+        </button>
+        <button class="tab-btn" onclick="switchTab('about')" style="display: flex; align-items: center; gap: 6px;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+          About
+        </button>
+      </div>
+
+      <!-- ============================================ -->
+      <!-- TAB 1: GENERAL (DEFAULT ACTIVE) -->
+      <!-- ============================================ -->
+      <div class="tab-pane active" id="tab-general">
+        <!-- General Configuration -->
+        <div class="settings-section">
+          <div class="settings-section-header">
+            <span class="settings-section-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span>
+            <div>
+              <div class="settings-section-title">General Configuration</div>
+              <div class="settings-section-desc">Basic panel settings</div>
+            </div>
+          </div>
+          <div class="settings-section-body">
+            <div class="settings-row">
+              <div class="settings-row-info">
+                <div class="settings-row-label">Panel Name</div>
+                <div class="settings-row-desc">Display name for your HKVM panel</div>
+              </div>
+              <div class="settings-row-control">
+                <input type="text" class="form-control" id="setting_panel_name" data-key="panel_name" placeholder="HKVM Control Panel">
+              </div>
+            </div>
+            <div class="settings-row">
+              <div class="settings-row-info">
+                <div class="settings-row-label">Panel Tagline</div>
+                <div class="settings-row-desc">Subtitle or description</div>
+              </div>
+              <div class="settings-row-control">
+                <input type="text" class="form-control" id="setting_panel_tagline" data-key="panel_tagline" placeholder="Virtual Machine Management System">
+              </div>
+            </div>
+            <div class="settings-row">
+              <div class="settings-row-info">
+                <div class="settings-row-label">Panel Base URL</div>
+                <div class="settings-row-desc">Your panel's base URL (without trailing slash)</div>
+              </div>
+              <div class="settings-row-control">
+                <input type="text" class="form-control" id="setting_panel_url" data-key="panel_url" placeholder="https://panel.example.com">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Session & Access Settings -->
+        <div class="settings-section">
+          <div class="settings-section-header">
+            <span class="settings-section-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span>
+            <div>
+              <div class="settings-section-title">Session & Access</div>
+              <div class="settings-section-desc">User authentication settings</div>
+            </div>
+          </div>
+          <div class="settings-section-body">
+            <div class="settings-row">
+              <div class="settings-row-info">
+                <div class="settings-row-label">Session Timeout (minutes)</div>
+                <div class="settings-row-desc">Auto-logout after inactivity</div>
+              </div>
+              <div class="settings-row-control">
+                <input type="number" class="form-control" id="setting_session_timeout" data-key="session_timeout" placeholder="30" min="5" max="1440">
+              </div>
+            </div>
+            <div class="settings-row">
+              <div class="settings-row-info">
+                <div class="settings-row-label">Allow User Registration</div>
+                <div class="settings-row-desc">Permit new users to create accounts</div>
+              </div>
+              <div class="settings-row-control">
+                <label class="toggle-switch">
+                  <input type="checkbox" class="toggle-input" id="setting_allow_registration" data-key="allow_registration">
+                  <div class="toggle-track"><div class="toggle-thumb"></div></div>
+                </label>
+              </div>
+            </div>
+            <div class="settings-row">
+              <div class="settings-row-info">
+                <div class="settings-row-label">Enable API Keys</div>
+                <div class="settings-row-desc">Allow users to generate API keys for external access</div>
+              </div>
+              <div class="settings-row-control">
+                <label class="toggle-switch">
+                  <input type="checkbox" class="toggle-input" id="setting_enable_api_keys" data-key="enable_api_keys">
+                  <div class="toggle-track"><div class="toggle-thumb"></div></div>
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============================================ -->
+      <!-- TAB 2: BRANDING -->
+      <!-- ============================================ -->
+      <div class="tab-pane" id="tab-branding">
+        <!-- Site Icon -->
+        <div class="settings-section">
+          <div class="settings-section-header">
+            <span class="settings-section-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><circle cx="11" cy="11" r="2"/></svg></span>
+            <div>
+              <div class="settings-section-title">Site Icon</div>
+              <div class="settings-section-desc">Logo and favicon</div>
+            </div>
+          </div>
+          <div class="settings-section-body">
+            <div class="settings-row">
+              <div class="settings-row-info">
+                <div class="settings-row-label">Site Icon URL</div>
+                <div class="settings-row-desc">PNG/SVG path for logo</div>
+              </div>
+              <div class="settings-row-control">
+                <input type="text" class="form-control" id="setting_site_icon_url" data-key="site_icon_url" placeholder="/public/images/logo.png">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Preview -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg> Preview</div>
+          </div>
+          <div class="card-body">
+            <div style="padding: 20px; background: var(--bg-secondary); border-radius: var(--radius-md); text-align: center;">
+              <img id="previewIcon" src="" style="width: 48px; height: 48px; margin-bottom: 10px; border-radius: 8px; object-fit: cover; display: none;" onerror="this.style.display='none'; document.getElementById('previewIconFallback').style.display='block';">
+              <div style="font-size: 36px; margin-bottom: 10px; display: none; color: var(--accent-primary);" id="previewIconFallback">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+              </div>
+              <div style="font-size: 16px; font-weight: 700;" id="previewTitle">HKVM Panel</div>
+              <div style="font-size: 12px; color: var(--text-muted); margin-top: 4px;" id="previewDesc">Virtual Machine Management System</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============================================ -->
+      <!-- TAB 3: SECURITY -->
+      <!-- ============================================ -->
+      <div class="tab-pane" id="tab-security">
+        <!-- Password Management -->
+        <div class="settings-section">
+          <div class="settings-section-header">
+            <span class="settings-section-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg></span>
+            <div>
+              <div class="settings-section-title">Password Management</div>
+              <div class="settings-section-desc">Change admin credentials</div>
+            </div>
+          </div>
+          <div class="settings-section-body">
+            <div class="settings-row">
+              <div class="settings-row-info">
+                <div class="settings-row-label">Change Admin Password</div>
+                <div class="settings-row-desc">Update administrator credentials</div>
+              </div>
+              <div class="settings-row-control">
+                <button class="btn btn-outline btn-sm" onclick="openModal('changePasswordModal')" style="display: flex; align-items: center; gap: 6px;">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.6 7.6a5.5 5.5 0 1 0-7.8 7.8 5.5 5.5 0 0 0 7.8-7.8z"/><path d="M15 5l4 4"/></svg>
+                  Change Password
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Security Overview -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> Security Overview</div>
+          </div>
+          <div class="card-body">
+            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px;">
+              <div style="padding: 14px; background: rgba(16, 185, 129, 0.06); border: 1px solid rgba(16, 185, 129, 0.15); border-radius: 8px;">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="color: var(--accent-green);"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+                <div style="font-size: 12px; font-weight: 600; color: var(--accent-green); margin-top: 6px;">Session Auth</div>
+                <div style="font-size: 11px; color: var(--text-muted);">bcrypt hashed</div>
+              </div>
+              <div style="padding: 14px; background: rgba(99, 102, 241, 0.06); border: 1px solid rgba(99, 102, 241, 0.15); border-radius: 8px;">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="color: #6366f1;"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                <div style="font-size: 12px; font-weight: 600; color: #6366f1; margin-top: 6px;">Encrypted Storage</div>
+                <div style="font-size: 11px; color: var(--text-muted);">Sensitive data</div>
+              </div>
+              <div style="padding: 14px; background: rgba(239, 68, 68, 0.06); border: 1px solid rgba(239, 68, 68, 0.15); border-radius: 8px;">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="color: #ef4444;"><path d="M12 2v20m10-10H2"/></svg>
+                <div style="font-size: 12px; font-weight: 600; color: #ef4444; margin-top: 6px;">Access Control</div>
+                <div style="font-size: 11px; color: var(--text-muted);">Role-based</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============================================ -->
+      <!-- TAB 4: SYSTEM -->
+      <!-- ============================================ -->
+      <div class="tab-pane" id="tab-system">
+        <!-- System Information -->
+        <div class="settings-section">
+          <div class="settings-section-header">
+            <span class="settings-section-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3"/></svg></span>
+            <div>
+              <div class="settings-section-title">System Information</div>
+              <div class="settings-section-desc">Server and environment details</div>
+            </div>
+          </div>
+          <div class="settings-section-body">
+            <div class="settings-row">
+              <div class="settings-row-info">
+                <div class="settings-row-label">Node.js Version</div>
+              </div>
+              <div class="settings-row-control">
+                <div style="font-size: 13px; color: var(--text-secondary);" id="nodeVersion">Loading...</div>
+              </div>
+            </div>
+            <div class="settings-row">
+              <div class="settings-row-info">
+                <div class="settings-row-label">Platform</div>
+              </div>
+              <div class="settings-row-control">
+                <div style="font-size: 13px; color: var(--text-secondary);" id="platformInfo">Loading...</div>
+              </div>
+            </div>
+            <div class="settings-row">
+              <div class="settings-row-info">
+                <div class="settings-row-label">Uptime</div>
+              </div>
+              <div class="settings-row-control">
+                <div style="font-size: 13px; color: var(--text-secondary);" id="uptimeInfo">Loading...</div>
+              </div>
+            </div>
+            <div class="settings-row">
+              <div class="settings-row-info">
+                <div class="settings-row-label">Database</div>
+              </div>
+              <div class="settings-row-control">
+                <div style="font-size: 13px; color: var(--text-secondary);">SQLite</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============================================ -->
+      <!-- TAB 5: DISCORD -->
+      <!-- ============================================ -->
+      <div class="tab-pane" id="tab-discord">
+        <!-- Discord Authentication Enable/Disable -->
+        <div class="settings-section">
+          <div class="settings-section-header">
+            <span class="settings-section-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" style="color: #5865F2;"><path d="M20.317 4.3632a19.791 19.791 0 00-4.885-1.515a.074.074 0 00-.079.0366c-.211.3648-.444.8384-.607 1.2144a18.27 18.27 0 00-5.487 0c-.163-.3776-.385-.8496-.607-1.2144a.077.077 0 00-.079-.0365c-1.751.289-3.436.906-4.884 1.515a.07.07 0 00-.032.0277C1.533 8.93.013 12.3928 1.191 15.7839a.076.076 0 00.029.0335c2.409 1.796 4.776 2.894 7.102 3.622a.077.077 0 00.084-.0276c.462-.6392.873-1.3135 1.226-2.0137a.073.073 0 00-.041-.1008c-.663-.2565-1.289-.5666-1.88-.9235a.075.075 0 01-.008-.1242c.126-.0947.252-.1938.372-.2923a.072.072 0 01.075-.0102c3.928 1.7898 8.183 1.7898 12.061 0a.073.073 0 01.075.009c.12.099.246.1991.373.2924a.075.075 0 01-.006.1242c-.59.3569-1.216.6674-1.88.9235a.073.073 0 00-.041.1008c.353.6994.764 1.3745 1.226 2.0137a.076.076 0 00.084.0276c2.327-.7285 4.694-1.8386 7.102-3.6221a.077.077 0 00.03-.0334c1.278-3.4668-.213-6.9301-1.798-9.7839a.070.070 0 00-.031-.0277zM8.02 13.2823c-.842 0-1.54-.7734-1.54-1.7244c0-.951.686-1.7244 1.54-1.7244c.856 0 1.551.7734 1.54 1.7244c0 .951-.686 1.7244-1.54 1.7244zm7.973 0c-.842 0-1.54-.7734-1.54-1.7244c0-.951.686-1.7244 1.54-1.7244c.856 0 1.551.7734 1.54 1.7244c0 .951-.684 1.7244-1.54 1.7244z"/></svg></span>
+            <div>
+              <div class="settings-section-title">Discord Authentication</div>
+              <div class="settings-section-desc">OAuth login settings</div>
+            </div>
+          </div>
+          <div class="settings-section-body">
+            <div class="settings-row">
+              <div class="settings-row-info">
+                <div class="settings-row-label">Enable Discord Login</div>
+                <div class="settings-row-desc">Allow users to login with Discord account</div>
+              </div>
+              <div class="settings-row-control">
+                <label class="toggle-switch">
+                  <input type="checkbox" class="toggle-input" id="discord_enabled" data-key="discord_enabled" onchange="updateDiscordFormState()">
+                  <div class="toggle-track"><div class="toggle-thumb"></div></div>
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Discord OAuth Credentials -->
+        <div class="settings-section" id="discordCredsSection" style="display: none;">
+          <div class="settings-section-header">
+            <span class="settings-section-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.6 7.6a5.5 5.5 0 1 0-7.8 7.8 5.5 5.5 0 0 0 7.8-7.8z"/></svg></span>
+            <div>
+              <div class="settings-section-title">OAuth Credentials</div>
+              <div class="settings-section-desc">Discord Developer Portal settings</div>
+            </div>
+          </div>
+          <div class="settings-section-body">
+            <div class="settings-row">
+              <div class="settings-row-info">
+                <div class="settings-row-label">Client ID</div>
+                <div class="settings-row-desc">From Discord Developer Portal</div>
+              </div>
+              <div class="settings-row-control">
+                <input type="text" class="form-control" id="discord_client_id" data-key="discord_client_id" placeholder="Your Discord Application Client ID">
+              </div>
+            </div>
+            <div class="settings-row">
+              <div class="settings-row-info">
+                <div class="settings-row-label">Client Secret</div>
+                <div class="settings-row-desc">From Discord Developer Portal (keep secure!)</div>
+              </div>
+              <div class="settings-row-control">
+                <input type="password" class="form-control" id="discord_client_secret" data-key="discord_client_secret" placeholder="Your Discord Application Client Secret">
+              </div>
+            </div>
+            <div class="settings-row">
+              <div class="settings-row-info">
+                <div class="settings-row-label">Redirect URI</div>
+                <div class="settings-row-desc">OAuth2 callback URL for Discord</div>
+              </div>
+              <div class="settings-row-control">
+                <input type="text" class="form-control" id="discord_redirect_uri" data-key="discord_redirect_uri" placeholder="https://yourserver.com/auth/discord/callback">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Discord Bot Settings -->
+        <div class="settings-section" id="discordBotSection" style="display: none;">
+          <div class="settings-section-header">
+            <span class="settings-section-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span>
+            <div>
+              <div class="settings-section-title">Bot Settings (Optional)</div>
+              <div class="settings-section-desc">For automatic role assignment</div>
+            </div>
+          </div>
+          <div class="settings-section-body">
+            <div class="settings-row">
+              <div class="settings-row-info">
+                <div class="settings-row-label">Bot Token</div>
+                <div class="settings-row-desc">For automatic role assignment and server features</div>
+              </div>
+              <div class="settings-row-control">
+                <input type="password" class="form-control" id="discord_bot_token" data-key="discord_bot_token" placeholder="Your Discord Bot Token (optional)">
+              </div>
+            </div>
+            <div class="settings-row">
+              <div class="settings-row-info">
+                <div class="settings-row-label">Guild ID (Server ID)</div>
+                <div class="settings-row-desc">Discord server where users will be added</div>
+              </div>
+              <div class="settings-row-control">
+                <input type="text" class="form-control" id="discord_guild_id" data-key="discord_guild_id" placeholder="Your Discord Server ID (optional)">
+              </div>
+            </div>
+            <div class="settings-row">
+              <div class="settings-row-info">
+                <div class="settings-row-label">Auto Role ID</div>
+                <div class="settings-row-desc">Automatic role assigned to new members</div>
+              </div>
+              <div class="settings-row-control">
+                <input type="text" class="form-control" id="discord_auto_role_id" data-key="discord_auto_role_id" placeholder="Discord Role ID for auto-assignment (optional)">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Discord Setup Guide -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg> Discord Setup Guide</div>
+          </div>
+          <div class="card-body">
+            <div style="font-size: 13px; line-height: 1.8; color: var(--text-secondary);">
+              <div style="margin-bottom: 16px;">
+                <div style="font-weight: 600; margin-bottom: 8px; color: var(--text-primary);">How to setup Discord OAuth:</div>
+                <ol style="margin: 0; padding-left: 20px;">
+                  <li style="margin-bottom: 6px;">Go to <a href="https://discord.com/developers/applications" target="_blank" style="color: #5865F2; text-decoration: underline;">Discord Developer Portal</a></li>
+                  <li style="margin-bottom: 6px;">Create a new application</li>
+                  <li style="margin-bottom: 6px;">Go to "OAuth2" → "General" and copy the Client ID and Client Secret</li>
+                  <li style="margin-bottom: 6px;">Set Redirect URL in OAuth2 section to match your Redirect URI above</li>
+                  <li style="margin-bottom: 6px;">Enter the credentials here and enable Discord Login</li>
+                </ol>
+              </div>
+              <div style="padding: 12px; background: rgba(99, 102, 241, 0.06); border-left: 3px solid #6366f1; border-radius: 4px;">
+                <strong style="color: #6366f1;">Redirect URI Example:</strong><br>
+                <code style="font-size: 12px;">https://yourserver.com/auth/discord/callback</code>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============================================ -->
+      <!-- TAB 6: ABOUT -->
+      <!-- ============================================ -->
+      <div class="tab-pane" id="tab-about">
+        <!-- About HKVM -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg> About HKVM</div>
+          </div>
+          <div class="card-body">
+            <div style="font-size: 14px; line-height: 1.8;">
+              <p><strong>HKVM Control Panel v1</strong></p>
+              <p style="color: var(--text-secondary); margin-top: 8px;">A comprehensive virtual machine management system built with Node.js and SQLite. Manage your VM infrastructure with ease and efficiency.</p>
+              <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border-subtle);">
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px;">
+                  <div>
+                    <div style="font-size: 12px; color: var(--text-muted); font-weight: 600;">VERSION</div>
+                    <div style="font-size: 16px; font-weight: 700; margin-top: 4px;">1.0.0</div>
+                  </div>
+                  <div>
+                    <div style="font-size: 12px; color: var(--text-muted); font-weight: 600;">DATABASE</div>
+                    <div style="font-size: 16px; font-weight: 700; margin-top: 4px;">SQLite</div>
+                  </div>
+                  <div>
+                    <div style="font-size: 12px; color: var(--text-muted); font-weight: 600;">RUNTIME</div>
+                    <div style="font-size: 16px; font-weight: 700; margin-top: 4px;">Node.js</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- System Information -->
+        <div class="card" style="margin-top: 32px;">
+          <div class="card-header">
+            <div class="card-title"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/></svg> System Information</div>
+          </div>
+          <div class="card-body">
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px;">
+              <div>
+                <div style="font-size: 12px; color: var(--text-muted); font-weight: 600; margin-bottom: 6px;">NODE.JS VERSION</div>
+                <div style="font-size: 14px; font-weight: 500;" id="sysNodeVersion">Loading...</div>
+              </div>
+              <div>
+                <div style="font-size: 12px; color: var(--text-muted); font-weight: 600; margin-bottom: 6px;">PLATFORM</div>
+                <div style="font-size: 14px; font-weight: 500;" id="sysPlatform">Loading...</div>
+              </div>
+              <div>
+                <div style="font-size: 12px; color: var(--text-muted); font-weight: 600; margin-bottom: 6px;">UPTIME</div>
+                <div style="font-size: 14px; font-weight: 500;" id="sysUptime">Loading...</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- Change Password Modal -->
+<div id="changePasswordModal" style="display: none !important; position: fixed !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 100% !important; background: rgba(0, 0, 0, 0.7) !important; z-index: 10000 !important; align-items: center !important; justify-content: center !important;">
+  <div style="position: relative; max-width: 420px; width: 90%; background: var(--bg-primary); border-radius: var(--radius-lg); box-shadow: 0 25px 80px rgba(0, 0, 0, 0.5); animation: slideIn 0.3s ease-out; border: 1px solid var(--border-subtle); max-height: 90vh; overflow-y: auto; transform: none !important;">
+    <div style="padding: 20px 24px; border-bottom: 1px solid var(--border-subtle); display: flex; justify-content: space-between; align-items: center;">
+      <h2 style="margin: 0; font-size: 18px; font-weight: 700; color: var(--text-primary);">Change Admin Password</h2>
+      <button onclick="closeModal('changePasswordModal')" style="cursor: pointer; font-size: 28px; color: var(--text-muted); border: none; background: none; padding: 0; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; transition: color 0.2s;">&times;</button>
+    </div>
+    <div style="padding: 24px;">
+      <div style="margin-bottom: 18px;">
+        <label style="display: block; margin-bottom: 8px; font-weight: 600; color: var(--text-primary); font-size: 13px;">Current Password</label>
+        <input type="password" id="currentPassword" placeholder="Enter current password" style="width: 100%; padding: 11px 13px; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--bg-secondary); color: var(--text-primary); font-size: 14px; box-sizing: border-box; transition: border-color 0.2s;">
+      </div>
+      <div style="margin-bottom: 18px;">
+        <label style="display: block; margin-bottom: 8px; font-weight: 600; color: var(--text-primary); font-size: 13px;">New Password</label>
+        <input type="password" id="newPassword" placeholder="Enter new password" style="width: 100%; padding: 11px 13px; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--bg-secondary); color: var(--text-primary); font-size: 14px; box-sizing: border-box; transition: border-color 0.2s;">
+      </div>
+      <div style="margin-bottom: 24px;">
+        <label style="display: block; margin-bottom: 8px; font-weight: 600; color: var(--text-primary); font-size: 13px;">Confirm New Password</label>
+        <input type="password" id="confirmPassword" placeholder="Confirm new password" style="width: 100%; padding: 11px 13px; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--bg-secondary); color: var(--text-primary); font-size: 14px; box-sizing: border-box; transition: border-color 0.2s;">
+      </div>
+    </div>
+    <div style="padding: 16px 24px; border-top: 1px solid var(--border-subtle); display: flex; gap: 12px; justify-content: flex-end;">
+      <button onclick="closeModal('changePasswordModal')" style="padding: 10px 18px; border: 1px solid var(--border-subtle); background: transparent; color: var(--text-primary); border-radius: var(--radius-md); cursor: pointer; font-weight: 600; font-size: 14px; transition: all 0.2s;">Cancel</button>
+      <button onclick="changeAdminPassword()" class="btn-primary-modal" style="padding: 10px 18px; background: var(--accent-primary); color: var(--bg-primary); border: none; border-radius: var(--radius-md); cursor: pointer; font-weight: 700; font-size: 14px; transition: all 0.2s; text-shadow: none; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);">Change Password</button>
+    </div>
+  </div>
+</div>
+
+<style>
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+#changePasswordModal {
+  animation: fadeIn 0.2s ease-out !important;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+#changePasswordModal .btn-primary-modal:hover {
+  opacity: 0.85 !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2) !important;
+}
+
+#changePasswordModal .btn-primary-modal:active {
+  transform: scale(0.98);
+}
+
+/* Light theme adjustments */
+body.light-theme #changePasswordModal .btn-primary-modal {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15) !important;
+}
+
+body.light-theme #changePasswordModal .btn-primary-modal:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2) !important;
+}
+</style>
+
+<script>
+// Tab Switching
+function switchTab(tabName) {
+  // Hide all panes
+  document.querySelectorAll('.tab-pane').forEach(pane => {
+    pane.classList.remove('active');
+  });
+  
+  // Remove active from all buttons
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.classList.remove('active');
+  });
+  
+  // Show selected pane
+  const pane = document.getElementById('tab-' + tabName);
+  if (pane) {
+    pane.classList.add('active');
+  }
+  
+  // Mark button as active
+  event.target.closest('.tab-btn').classList.add('active');
+}
+
+// Modal Functions
+function openModal(modalId) {
+  const modal = document.getElementById(modalId);
+  if (modal) {
+    modal.style.display = 'flex';
+  }
+}
+
+function closeModal(modalId) {
+  const modal = document.getElementById(modalId);
+  if (modal) {
+    modal.style.display = 'none';
+  }
+}
+
+// Discord Form State
+function updateDiscordFormState() {
+  const isEnabled = document.getElementById('discord_enabled').checked;
+  document.getElementById('discordCredsSection').style.display = isEnabled ? 'block' : 'none';
+  document.getElementById('discordBotSection').style.display = isEnabled ? 'block' : 'none';
+}
+
+// Load Settings from Server
+function loadSettings() {
+  fetch('/api/settings')
+    .then(res => res.json())
+    .then(data => {
+      // Load text inputs
+      Object.keys(data).forEach(key => {
+        const input = document.getElementById('setting_' + key);
+        if (input && input.type !== 'checkbox') {
+          input.value = data[key] || '';
+        }
+      });
+      
+      // Load checkboxes
+      Object.keys(data).forEach(key => {
+        const input = document.getElementById('setting_' + key);
+        if (input && input.type === 'checkbox') {
+          input.checked = data[key] === true || data[key] === 'true';
+        }
+      });
+      
+      // Load Discord settings
+      if (data.discord_enabled) {
+        document.getElementById('discord_enabled').checked = true;
+        updateDiscordFormState();
+      }
+      
+      // Load system info
+      if (data.nodeVersion) {
+        document.getElementById('nodeVersion').textContent = data.nodeVersion;
+        document.getElementById('sysNodeVersion').textContent = data.nodeVersion;
+      }
+      if (data.platform) {
+        document.getElementById('platformInfo').textContent = data.platform;
+        document.getElementById('sysPlatform').textContent = data.platform;
+      }
+      if (data.uptime) {
+        document.getElementById('uptimeInfo').textContent = data.uptime;
+        document.getElementById('sysUptime').textContent = data.uptime;
+      }
+      
+      // Update preview
+      if (data.site_icon_url) {
+        document.getElementById('previewIcon').src = data.site_icon_url;
+        document.getElementById('previewIcon').style.display = 'block';
+        document.getElementById('previewIconFallback').style.display = 'none';
+      }
+      if (data.panel_name) {
+        document.getElementById('previewTitle').textContent = data.panel_name;
+      }
+      if (data.panel_tagline) {
+        document.getElementById('previewDesc').textContent = data.panel_tagline;
+      }
+    })
+    .catch(err => console.error('Failed to load settings:', err));
+}
+
+// Save All Settings
+function saveAllSettings() {
+  const settings = {};
+  
+  // Collect all form inputs
+  document.querySelectorAll('input[data-key]').forEach(input => {
+    const key = input.getAttribute('data-key');
+    if (input.type === 'checkbox') {
+      settings[key] = input.checked;
+    } else {
+      settings[key] = input.value;
+    }
+  });
+  
+  fetch('/api/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
+    credentials: 'include'
+  })
+    .then(res => res.json())
+    .then(data => {
+      if (data.success) {
+        showAlert('Settings saved successfully!', 'success');
+      } else {
+        showAlert('Failed to save settings: ' + (data.message || 'Unknown error'), 'error');
+      }
+    })
+    .catch(err => {
+      console.error('Error saving settings:', err);
+      showAlert('Error saving settings: ' + err.message, 'error');
+    });
+}
+
+// Change Admin Password
+function changeAdminPassword() {
+  const current = document.getElementById('currentPassword').value;
+  const newPass = document.getElementById('newPassword').value;
+  const confirm = document.getElementById('confirmPassword').value;
+  
+  if (!current || !newPass || !confirm) {
+    showAlert('Please fill all password fields', 'error');
+    return;
+  }
+  
+  if (newPass !== confirm) {
+    showAlert('New passwords do not match', 'error');
+    return;
+  }
+  
+  if (newPass.length < 6) {
+    showAlert('Password must be at least 6 characters', 'error');
+    return;
+  }
+  
+  fetch('/api/admin/change-password', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ currentPassword: current, newPassword: newPass }),
+    credentials: 'include'
+  })
+    .then(res => res.json())
+    .then(data => {
+      if (data.success) {
+        showAlert('Password changed successfully!', 'success');
+        closeModal('changePasswordModal');
+        document.getElementById('currentPassword').value = '';
+        document.getElementById('newPassword').value = '';
+        document.getElementById('confirmPassword').value = '';
+      } else {
+        showAlert('Failed to change password: ' + (data.message || 'Unknown error'), 'error');
+      }
+    })
+    .catch(err => {
+      console.error('Error changing password:', err);
+      showAlert('Error: ' + err.message, 'error');
+    });
+}
+
+// Show Alert
+function showAlert(message, type = 'info') {
+  const alert = document.getElementById('settingsAlert');
+  alert.className = 'alert alert-' + type;
+  alert.textContent = message;
+  alert.style.display = 'block';
+  
+  setTimeout(() => {
+    alert.style.display = 'none';
+  }, 5000);
+}
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', () => {
+  loadSettings();
+  
+  // Update preview on input change
+  document.getElementById('setting_site_icon_url')?.addEventListener('change', () => {
+    const url = document.getElementById('setting_site_icon_url').value;
+    if (url) {
+      document.getElementById('previewIcon').src = url;
+      document.getElementById('previewIcon').style.display = 'block';
+      document.getElementById('previewIconFallback').style.display = 'none';
+    }
+  });
+  
+  document.getElementById('setting_panel_name')?.addEventListener('change', () => {
+    document.getElementById('previewTitle').textContent = document.getElementById('setting_panel_name').value || 'HKVM Panel';
+  });
+  
+  document.getElementById('setting_panel_tagline')?.addEventListener('change', () => {
+    document.getElementById('previewDesc').textContent = document.getElementById('setting_panel_tagline').value || 'Virtual Machine Management System';
+  });
+});
+</script>
+
+</body>
+</html>

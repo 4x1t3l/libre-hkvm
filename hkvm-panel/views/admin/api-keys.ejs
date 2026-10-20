@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0a0a0f">
+  <title>API Keys - HKVM Panel</title>
+  <link rel="icon" href="<%= siteLogo %>" type="image/png">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link rel="stylesheet" href="/css/admin.css">
+  <style>
+    .api-section { margin-bottom: 32px; }
+    .api-key-item { 
+      background: var(--bg-card); 
+      border: 1px solid var(--border-card); 
+      border-radius: 8px; 
+      padding: 16px; 
+      margin-bottom: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .api-key-info {
+      flex: 1;
+      min-width: 300px;
+    }
+    .api-key-masked { 
+      font-family: monospace; 
+      background: #0a0a12; 
+      padding: 6px 10px; 
+      border-radius: 4px;
+      color: #6366F1;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .api-key-masked:hover {
+      background: #111119;
+    }
+    .api-key-copy-btn {
+      background: none;
+      border: none;
+      color: #6366F1;
+      cursor: pointer;
+      padding: 0;
+      display: inline-flex;
+      font-size: 12px;
+    }
+    .api-key-actions {
+      display: flex;
+      gap: 8px;
+    }
+  </style>
+</head>
+<body>
+<div class="admin-wrapper">
+  <%- include('../partials/admin/sidebar') %>
+
+  <div class="admin-main">
+    <%- include('../partials/admin/header') %>
+
+    <div class="admin-content">
+      <!-- Page Header -->
+      <div class="page-header">
+        <div class="page-title-section">
+          <h1 class="page-title">
+            <span class="title-icon" style="color:#6366F1;"><i class="fas fa-key"></i></span>
+            API Keys & Documentation
+          </h1>
+          <p class="page-subtitle">Manage API keys for external access and integration</p>
+        </div>
+        <button class="btn btn-primary" onclick="showCreateKeyModal()">
+          <i class="fas fa-plus"></i> Create API Key
+        </button>
+      </div>
+
+      <!-- API Keys Section -->
+      <div class="card api-section">
+        <div class="card-header">
+          <div class="card-title">
+            <span style="color:#6366F1;display:inline-flex;"><i class="fas fa-key" style="width:18px;height:18px;"></i></span>
+            Your API Keys
+          </div>
+        </div>
+        <div class="card-body">
+          <div id="apiKeysList" style="max-height: 600px; overflow-y: auto;">
+            <div style="text-align: center; padding: 32px;">
+              <div class="spinner" style="margin: 0 auto;"></div>
+              <p style="color: var(--text-muted); margin-top: 16px;">Loading API keys...</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Quick Start Guide -->
+      <div class="card api-section">
+        <div class="card-header">
+          <div class="card-title">
+            <span style="color:#06B6D4;display:inline-flex;"><i class="fas fa-rocket" style="width:18px;height:18px;"></i></span>
+            Quick Start
+          </div>
+        </div>
+        <div class="card-body" style="font-size: 13px; line-height: 1.8;">
+          <div style="margin-bottom: 16px;">
+            <h4 style="color: var(--text-primary); font-weight: 600; margin-bottom: 8px;">1. Get Your API Key</h4>
+            <p style="color: var(--text-muted); margin: 0;">Click "Create API Key" above, enter a name, and save the key securely. You won't be able to see it again!</p>
+          </div>
+
+          <div style="margin-bottom: 16px;">
+            <h4 style="color: var(--text-primary); font-weight: 600; margin-bottom: 8px;">2. Authenticate Requests</h4>
+            <p style="color: var(--text-muted); margin: 0 0 8px 0;">Include your API key in the request header:</p>
+            <div style="background: #0a0a12; border: 1px solid var(--border-color); border-radius: 6px; padding: 12px; font-family: monospace; font-size: 11px; color: #a5f3fc; overflow-x: auto;">
+X-API-Key: hk_your_api_key_here
+            </div>
+          </div>
+
+          <div style="margin-bottom: 16px;">
+            <h4 style="color: var(--text-primary); font-weight: 600; margin-bottom: 8px;">3. Make Requests</h4>
+            <p style="color: var(--text-muted); margin: 0 0 8px 0;">Use the base URL:</p>
+            <div style="background: #0a0a12; border: 1px solid var(--border-color); border-radius: 6px; padding: 12px; font-family: monospace; font-size: 11px; color: #a5f3fc; overflow-x: auto;">
+<%= baseUrl %>/api
+            </div>
+          </div>
+
+          <div style="padding: 12px; background: rgba(16, 185, 129, 0.06); border-radius: 6px; border-left: 3px solid #10B981;">
+            <h4 style="color: var(--text-primary); margin: 0 0 8px 0; font-weight: 600;">Example: List VMs</h4>
+            <div style="background: #0a0a12; border: 1px solid var(--border-color); border-radius: 6px; padding: 12px; font-family: monospace; font-size: 10px; color: #a5f3fc; overflow-x: auto;">
+curl -H "X-API-Key: hk_your_key" <%= baseUrl %>/api/vms
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <%- include('../partials/admin/footer') %>
+  </div>
+</div>
+
+<!-- Create API Key Modal -->
+<div id="createKeyModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 9999; align-items: center; justify-content: center;">
+  <div style="background: var(--bg-primary); border-radius: var(--radius-lg); padding: 32px; max-width: 500px; width: 90%; box-shadow: var(--shadow-xl);">
+    <h2 style="margin-top: 0; color: var(--text-primary);">Create API Key</h2>
+    
+    <div class="form-group">
+      <label class="form-label">Key Name <span class="required">*</span></label>
+      <input type="text" class="form-control" id="keyName" placeholder="e.g., External Integration, Mobile App">
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Description</label>
+      <textarea class="form-control" id="keyDescription" placeholder="What will this API key be used for?" rows="3" style="resize: vertical;"></textarea>
+    </div>
+
+    <div style="display: flex; gap: 12px; margin-top: 24px;">
+      <button class="btn btn-ghost" onclick="closeCreateKeyModal()" style="flex: 1;">Cancel</button>
+      <button class="btn btn-primary" onclick="createApiKey()" style="flex: 1;">Create Key</button>
+    </div>
+  </div>
+</div>
+
+<script>
+function showCreateKeyModal() {
+  document.getElementById('createKeyModal').style.display = 'flex';
+}
+
+function closeCreateKeyModal() {
+  document.getElementById('createKeyModal').style.display = 'none';
+  document.getElementById('keyName').value = '';
+  document.getElementById('keyDescription').value = '';
+}
+
+async function createApiKey() {
+  const name = document.getElementById('keyName').value.trim();
+  const description = document.getElementById('keyDescription').value.trim();
+
+  if (!name) {
+    alert('Key name is required');
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/admin/api-keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, description })
+    });
+
+    const data = await res.json();
+    
+    if (data.success) {
+      alert('✓ API Key created!\n\nSave this key securely:\n' + data.api_key + '\n\nYou won\'t be able to see it again!');
+      closeCreateKeyModal();
+      loadApiKeys();
+    } else {
+      alert('Error: ' + data.error);
+    }
+  } catch (e) {
+    alert('Error creating API key: ' + e.message);
+  }
+}
+
+async function loadApiKeys() {
+  try {
+    const res = await fetch('/api/admin/api-keys');
+    const keys = await res.json();
+
+    if (!keys || keys.length === 0) {
+      document.getElementById('apiKeysList').innerHTML = `
+        <div style="text-align: center; padding: 32px;">
+          <i class="fas fa-key" style="font-size: 48px; color: var(--text-muted); opacity: 0.5;"></i>
+          <p style="color: var(--text-muted); margin-top: 16px;">No API keys yet. Create one to get started!</p>
+        </div>
+      `;
+      return;
+    }
+
+    let html = '';
+    keys.forEach(key => {
+      const lastUsed = key.last_used ? new Date(key.last_used).toLocaleString() : 'Never';
+      html += `
+        <div class="api-key-item">
+          <div class="api-key-info">
+            <div style="font-weight: 600; color: var(--text-primary); margin-bottom: 4px;">${key.name}</div>
+            <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 6px;">${key.description || 'No description'}</div>
+            <div style="font-size: 11px; color: var(--text-muted);">
+              <span class="api-key-masked" onclick="copyToClipboard('${key.api_key}', event)" title="Click to copy">
+                <span style="font-family: monospace; color: #10B981; font-weight: 500;">${key.api_key}</span>
+                <button class="api-key-copy-btn" title="Copy to clipboard">
+                  <i class="fas fa-copy"></i>
+                </button>
+              </span>
+              <span style="margin-left: 12px;">Last used: ${lastUsed}</span>
+            </div>
+          </div>
+          <div class="api-key-actions">
+            <button class="btn btn-sm btn-outline" onclick="revokeKey('${key.id}')">
+              <i class="fas fa-times-circle"></i> Revoke
+            </button>
+            <button class="btn btn-sm btn-outline" style="color: #EF4444;" onclick="deleteKey('${key.id}')">
+              <i class="fas fa-trash"></i> Delete
+            </button>
+          </div>
+        </div>
+      `;
+    });
+
+    document.getElementById('apiKeysList').innerHTML = html;
+  } catch (e) {
+    document.getElementById('apiKeysList').innerHTML = `<p style="color: red;">Error loading API keys: ${e.message}</p>`;
+  }
+}
+
+function copyToClipboard(text, event) {
+  event.stopPropagation();
+  
+  // Copy to clipboard using the Clipboard API
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => {
+      // Show success notification
+      const btn = event.target.closest('.api-key-copy-btn') || event.target;
+      const originalIcon = btn.innerHTML;
+      
+      // Change icon to checkmark
+      btn.innerHTML = '<i class="fas fa-check"></i>';
+      btn.style.color = '#10B981';
+      
+      // Reset after 2 seconds
+      setTimeout(() => {
+        btn.innerHTML = originalIcon;
+        btn.style.color = '#6366F1';
+      }, 2000);
+    }).catch(err => {
+      alert('Failed to copy: ' + err.message);
+    });
+  } else {
+    // Fallback for browsers that don't support Clipboard API
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    document.body.appendChild(textarea);
+    textarea.select();
+    try {
+      document.execCommand('copy');
+      alert('✓ API key copied to clipboard!');
+    } catch (err) {
+      alert('Failed to copy: ' + err.message);
+    }
+    document.body.removeChild(textarea);
+  }
+}
+
+async function revokeKey(keyId) {
+  if (!confirm('Are you sure you want to revoke this API key? It will no longer be usable.')) return;
+
+  try {
+    const res = await fetch(`/api/admin/api-keys/${keyId}/revoke`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    const data = await res.json();
+    
+    if (data.success) {
+      alert('✓ API key revoked');
+      loadApiKeys();
+    } else {
+      alert('Error: ' + data.error);
+    }
+  } catch (e) {
+    alert('Error: ' + e.message);
+  }
+}
+
+async function deleteKey(keyId) {
+  if (!confirm('Permanently delete this API key? This cannot be undone.')) return;
+
+  try {
+    const res = await fetch(`/api/admin/api-keys/${keyId}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    const data = await res.json();
+    
+    if (data.success) {
+      alert('✓ API key deleted');
+      loadApiKeys();
+    } else {
+      alert('Error: ' + data.error);
+    }
+  } catch (e) {
+    alert('Error: ' + e.message);
+  }
+}
+
+// Load API keys on page load
+document.addEventListener('DOMContentLoaded', loadApiKeys);
+</script>
+</body>
+</html>>
