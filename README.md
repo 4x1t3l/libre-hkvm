@@ -80,16 +80,23 @@ npm run build          # -> dist/app
 ```
 
 `pkg` bundles `app.js` plus `views/**` and `public/**` into a single
-executable. The default target is `node20-linux-x64`, because `pkg` 5.8.1
-is the latest release and ships base binaries up to node20.
+executable. The default target is `node18-linux-x64`, because `pkg` 5.8.1 is
+the latest release and the only one still publishing base binaries (it has
+none for node20 or node22).
 
-To build for a newer Node.js you need a matching base binary and
-`PKG_NODE_PATH` pointing at it:
+Two things to know:
 
-```bash
-export PKG_NODE_PATH=/path/to/node22-base-binaries
-npm run build
-```
+- **Build on Linux.** `pkg` bundles the native `sqlite3` binding, so the
+  Linux build of it is the one that has to be present. `sqlite3` 5.x ships
+  an N-API (`napi-v6`) prebuild, which is ABI-stable, so the same `.node`
+  works inside the packaged binary whatever Node version it embeds.
+- **To target a newer Node.js** you need a matching base binary *and* a
+  `sqlite3` build for that ABI:
+
+  ```bash
+  export PKG_NODE_PATH=/path/to/node22-base-binaries
+  npm run build
+  ```
 
 Add more targets by editing the `pkg` block in `package.json`.
 
