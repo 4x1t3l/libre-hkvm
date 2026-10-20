@@ -7,12 +7,63 @@ const session = require('express-session');
 const path = require('path');
 const fs = require('fs');
 const net = require('net');
-const { spawn, exec, execSync } = require('child_process');
+const { spawn, exec, execSync, execFile, execFileSync } = require('child_process');
 const os = require('os');
 const util = require('util');
+const crypto = require('crypto');
 const execPromise = util.promisify(exec);
+// Promise wrapper around execFile: the arguments are passed as an array, so
+// nothing is ever handed to a shell.
+const execFileAsync = util.promisify(require('child_process').execFile);
+const execPromiseAsync = (file, args, opts = {}) =>
+  new Promise((resolve, reject) => {
+    require('child_process').execFile(file, args, { ...opts, encoding: 'utf8' },
+      (err, stdout, stderr) => {
+        if (err) {
+          err.stdout = stdout;
+          err.stderr = stderr;
+          return reject(err);
+        }
+        resolve({ stdout, stderr });
+      });
+  });
 const { Client } = require('ssh2');
 require('dotenv').config();
+
+// ============= RATE LIMITING =============
+// A tiny in-memory limiter.  Without one, /api/login can be used both for
+// credential stuffing and for CPU exhaustion (bcrypt is deliberately slow).
+const RATE_BUCKETS = new Map();
+
+function rateLimit({ windowMs = 15 * 60 * 1000, max = 10, key = (req) => req.ip } = {}) {
+  return (req, res, next) => {
+    const now = Date.now();
+    const k = key(req);
+    let bucket = RATE_BUCKETS.get(k);
+    if (!bucket || now > bucket.reset) {
+      bucket = { count: 0, reset: now + windowMs };
+      RATE_BUCKETS.set(k, bucket);
+    }
+    // keep the map from growing without bound
+    if (RATE_BUCKETS.size > 10000) {
+      for (const [bk, bv] of RATE_BUCKETS) {
+        if (now > bv.reset) RATE_BUCKETS.delete(bk);
+      }
+    }
+    bucket.count += 1;
+    if (bucket.count > max) {
+      const retryAfter = Math.ceil((bucket.reset - now) / 1000);
+      res.set('Retry-After', String(retryAfter));
+      return res.status(429).json({ error: 'Too many requests', retryAfter });
+    }
+    next();
+  };
+}
+
+// A real bcrypt hash of an unguessable value, compared against when the
+// account does not exist, so that a missing account and a wrong password
+// take the same amount of time.
+const DUMMY_PASSWORD_HASH = '$2b$10$7EqJtq98hPqEX7fNZaFWoOhi5jPPQFVK5bZ0DGDGHDvYhFc7Z2CqS';
 
 // ============= PLATFORM DETECTION =============
 const isWindows = process.platform === 'win32';
@@ -48,9 +99,127 @@ function logError(component, vm_id, action, error) {
   }
 }
 
+// ============= CLOUD-INIT SAFETY =============
+// The username, password and hostname end up in a #cloud-config document.
+// Interpolated raw, a newline in any of them would let the caller inject
+// arbitrary cloud-init keys (runcmd, write_files, ssh_authorized_keys, ...).
+// They are YAML-quoted here, and values with control characters are
+// rejected outright.
+function yamlScalar(value) {
+  return JSON.stringify(String(value === undefined || value === null ? '' : value));
+}
+
+function cloudInitSafeValue(value, field) {
+  const s = String(value === undefined || value === null ? '' : value);
+  if (/[\r\n\0]/.test(s)) {
+    const err = new Error(`Invalid ${field}: it must not contain line breaks`);
+    err.status = 400;
+    throw err;
+  }
+  return s;
+}
+
+// ============= INPUT VALIDATION =============
+// A disk size ends up on a command line, so it must be a plain number with
+// an optional unit - nothing else may pass.
+const DISK_SIZE_RE = /^\d{1,5}(\.\d+)?\s*(K|M|G|T|P|E)i?B?$/i;
+
+// A storage path is used to build file names, so keep it to a boring
+// character set and make sure it stays inside the directory it is meant
+// to live in.
+// A storage path is used to build file names, so keep it free of shell
+// metacharacters and of relative path components.  The paths are also
+// passed to execFile() as arguments, so no shell ever sees them.
+const UNSAFE_PATH_CHARS = /[;&|`$(){}<>*?!'"\0\r\n]/;
+
+function isValidDiskSize(value) {
+  if (value === undefined || value === null || value === '') return true;
+  return DISK_SIZE_RE.test(String(value).trim());
+}
+
+function isSafeStoragePath(value) {
+  if (!value) return true;
+  const s = String(value);
+  if (s.length > 4096) return false;
+  if (UNSAFE_PATH_CHARS.test(s)) return false;
+  // no ".." components, on either separator
+  if (s.split(/[\\/]/).includes('..')) return false;
+  // must be absolute (drive letter on Windows, leading / elsewhere)
+  return path.isAbsolute(s);
+}
+
+
+// Resolve a file name inside a directory, refusing anything that would
+// escape it.  Returns null when the name is not acceptable.
+function safeJoin(baseDir, fileName) {
+  if (typeof fileName !== 'string' || fileName.length === 0) return null;
+  if (fileName.includes('\0')) return null;
+  const base = path.basename(fileName);
+  if (!base || base === '.' || base === '..') return null;
+  if (!/^[A-Za-z0-9._-]+$/.test(base)) return null;
+  // A name that carries a directory component is refused outright rather
+  // than silently reduced to its basename.
+  if (base !== fileName) return null;
+  const resolved = path.resolve(baseDir, base);
+  if (path.dirname(resolved) !== path.resolve(baseDir)) return null;
+  return resolved;
+}
+
+// ============= DOWNLOAD URL VALIDATION =============
+// The panel fetches template images itself, so a download URL is a way of
+// making the panel talk to something the caller picks.  Refuse anything
+// that points back at the panel's own network.
+const ALLOWED_DOWNLOAD_PROTOCOLS = ['http:', 'https:'];
+// A template image is a disk image - a few gigabytes at most.
+const MAX_TEMPLATE_BYTES = 64 * 1024 * 1024 * 1024;
+
+function isPrivateAddress(address) {
+  if (!address) return true;
+  const a = address.toLowerCase();
+  if (a === '127.0.0.1' || a === '::1' || a === '0.0.0.0' || a === '::') return true;
+  if (a.startsWith('10.') || a.startsWith('192.168.')) return true;
+  if (a.startsWith('169.254.')) return true;          // link-local, incl. cloud metadata
+  if (a.startsWith('172.')) {
+    const second = parseInt(a.split('.')[1], 10);
+    if (second >= 16 && second <= 31) return true;
+  }
+  if (a.startsWith('fc') || a.startsWith('fd')) return true;   // unique local
+  if (a.startsWith('fe80')) return true;
+  return false;
+}
+
+async function assertDownloadUrlAllowed(rawUrl) {
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch (e) {
+    throw new Error('Invalid download URL');
+  }
+  if (!ALLOWED_DOWNLOAD_PROTOCOLS.includes(parsed.protocol)) {
+    throw new Error('Only http and https download URLs are allowed');
+  }
+  if (process.env.HKVM_ALLOW_PRIVATE_DOWNLOADS === '1') {
+    return parsed;
+  }
+  let addresses;
+  try {
+    addresses = await require('dns').promises.lookup(parsed.hostname, { all: true });
+  } catch (e) {
+    throw new Error(`Could not resolve ${parsed.hostname}`);
+  }
+  for (const entry of addresses) {
+    if (isPrivateAddress(entry.address)) {
+      throw new Error(`${parsed.hostname} resolves to the private address ${entry.address} - refusing to download`);
+    }
+  }
+  return parsed;
+}
+
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+// The WebSocket server no longer accepts connections on its own: every
+// upgrade is authenticated first (see the 'upgrade' handler below).
+const wss = new WebSocket.Server({ noServer: true });
 const PORT = process.env.PORT || 8080;
 
 // For binary: use home directory or custom location for database
@@ -331,16 +500,70 @@ app.use((err, req, res, next) => {
   next(err);
 });
 app.use(express.static(path.join(__dirname, 'public')));
+
+// ============= SESSION SECRET =============
+// The session secret must never be hardcoded: anybody with the source
+// could mint a valid session cookie for any user.  Use SESSION_SECRET from
+// the environment, or generate a random one on first boot and persist it
+// in the data directory.
+function resolveSessionSecret() {
+  const fromEnv = (process.env.SESSION_SECRET || '').trim();
+  if (fromEnv.length >= 32) {
+    return fromEnv;
+  }
+  if (fromEnv) {
+    console.warn('[Security] SESSION_SECRET is shorter than 32 characters - ignoring it');
+  }
+  const secretFile = path.join(dbDir, '.session_secret');
+  try {
+    if (fs.existsSync(secretFile)) {
+      const existing = fs.readFileSync(secretFile, 'utf8').trim();
+      if (existing.length >= 32) {
+        return existing;
+      }
+    }
+    const generated = crypto.randomBytes(48).toString('hex');
+    fs.writeFileSync(secretFile, generated, { mode: 0o600 });
+    console.log('[Security] Generated a new session secret:', secretFile);
+    return generated;
+  } catch (error) {
+    console.error('[Security] Could not persist a session secret:', error.message);
+    return crypto.randomBytes(48).toString('hex');
+  }
+}
+
+// Set to 1 when the panel sits behind a TLS-terminating reverse proxy, so
+// that req.secure (and therefore the Secure cookie flag) is correct.
+if (process.env.HKVM_TRUST_PROXY === '1') {
+  app.set('trust proxy', 1);
+}
+
+const SECURE_COOKIES = process.env.NODE_ENV === 'production' ||
+                       process.env.HKVM_SECURE_COOKIES === '1';
+
+const SESSION_SECRET = resolveSessionSecret();
+// Keep a handle on the store so that the WebSocket upgrade handler can
+// resolve a session id to a user.
+const sessionStore = new session.MemoryStore();
+
 app.use(session({
-  secret: 'hopingboyz-secret-key-change-in-production',
+  store: sessionStore,
+  secret: SESSION_SECRET,
   resave: false,
-  saveUninitialized: true,
-  cookie: { secure: false, maxAge: 24 * 60 * 60 * 1000 }
+  saveUninitialized: false,
+  cookie: {
+    httpOnly: true,
+    secure: SECURE_COOKIES,
+    sameSite: 'lax',
+    maxAge: 24 * 60 * 60 * 1000
+  }
 }));
 
 // API Key auto-detection middleware - checks for X-API-Key on every request
 app.use((req, res, next) => {
-  const apiKey = req.headers['x-api-key'] || req.query.api_key;
+  // Header only.  Accepting the key in the query string leaks it into
+  // proxy logs, Referer headers and browser history.
+  const apiKey = req.headers['x-api-key'];
   
   if (apiKey) {
     // API key provided, validate it
@@ -603,7 +826,7 @@ function initializeDatabase() {
 
     // Initialize default site settings if not exist
     const defaultSettings = {
-      'site_name': 'HKVM Panel',
+      'site_name': 'Librefied by 4x1t3l',
       'site_description': 'Virtual Machine Management System',
       'site_icon_url': 'https://i.imgur.com/0DmkSi4.png',
     };
@@ -630,10 +853,30 @@ function initializeDatabase() {
 
     db.get(`SELECT * FROM users WHERE username = 'admin'`, (err, row) => {
       if (!row) {
-        const hashedPassword = bcrypt.hashSync('admin', 10);
+        // Never ship a well-known default password.  Use HKVM_ADMIN_PASSWORD
+        // if it is set, otherwise generate a random one and print it once -
+        // it is not stored anywhere, so it cannot be read back.
+        const supplied = (process.env.HKVM_ADMIN_PASSWORD || '').trim();
+        const generated = !supplied;
+        const password = supplied || crypto.randomBytes(12).toString('base64url');
+        const hashedPassword = bcrypt.hashSync(password, 10);
         db.run(`INSERT INTO users (username, password, email, role) VALUES (?, ?, ?, ?)`,
-          ['admin', hashedPassword, 'admin@hopingboyz.local', 'admin']);
-        console.log('✓ Default admin created: admin/admin (role: admin)');
+          ['admin', hashedPassword, 'admin@localhost', 'admin']);
+        if (generated) {
+          console.log('');
+          console.log('╔══════════════════════════════════════════════════════════╗');
+          console.log('║  FIRST RUN - the administrator account has been created.       ║');
+          console.log('║                                                                  ║');
+          console.log(`║     username: admin                                              ║`);
+          console.log(`║     password: ${password.padEnd(46)}║`);
+          console.log('║                                                                  ║');
+          console.log('║  This password is shown once and is not stored anywhere.        ║');
+          console.log('║  Set HKVM_ADMIN_PASSWORD to choose your own instead.           ║');
+          console.log('╚══════════════════════════════════════════════════════════╝');
+          console.log('');
+        } else {
+          console.log('✓ Default admin created with the password from HKVM_ADMIN_PASSWORD');
+        }
       } else {
         console.log(`✓ Admin user exists: ${row.username} (role: ${row.role})`);
       }
@@ -667,6 +910,27 @@ function checkAuth(req, res, next) {
   return res.redirect('/login');
 }
 
+// Load a VM and make sure the caller is allowed to touch it.
+// Administrators may load any VM; everybody else only their own.
+// Every route that takes a VM id goes through this, so that "can I see it"
+// and "can I change it" can never disagree.
+function loadOwnedVm(req, res, vmId, cb) {
+  const userId = req.session?.userId || req.userId;
+  const isAdmin = (req.session?.role || req.userRole) === 'admin';
+  if (isAdmin) {
+    return db.get(`SELECT * FROM vms WHERE vm_id = ?`, [vmId], (err, vm) => {
+      if (err) return res.status(500).json({ error: err.message });
+      if (!vm) return res.status(404).json({ error: 'VM not found' });
+      cb(vm);
+    });
+  }
+  db.get(`SELECT * FROM vms WHERE vm_id = ? AND owner_id = ?`, [vmId, userId], (err, vm) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (!vm) return res.status(404).json({ error: 'VM not found or access denied' });
+    cb(vm);
+  });
+}
+
 function checkAdmin(req, res, next) {
   // Check if authenticated
   if (!req.session && !req.apiKey) {
@@ -696,7 +960,8 @@ function checkAdmin(req, res, next) {
 
 // API Key authentication middleware
 function checkApiKey(req, res, next) {
-  const apiKey = req.headers['x-api-key'] || req.query.api_key;
+  // Header only - a key in the query string ends up in every access log.
+  const apiKey = req.headers['x-api-key'];
   
   if (!apiKey) {
     console.warn(`[API Auth Error] Missing API key in ${req.method} ${req.path}`);
@@ -737,31 +1002,107 @@ function checkApiKey(req, res, next) {
 
 // ============= AUTH ROUTES =============
 
-app.post('/api/login', (req, res) => {
+// Per-address and per-account limits.  The per-address limit has to be
+// generous enough for a whole office behind one NAT address; the
+// per-account limit is the one that stops credential stuffing.
+const LOGIN_LIMIT_PER_IP = parseInt(process.env.HKVM_LOGIN_LIMIT_PER_IP || '30', 10);
+const LOGIN_LIMIT_PER_ACCOUNT = parseInt(process.env.HKVM_LOGIN_LIMIT_PER_ACCOUNT || '5', 10);
+const LOGIN_LIMIT_WINDOW_MS = 15 * 60 * 1000;
+
+const loginLimiter = rateLimit({ windowMs: LOGIN_LIMIT_WINDOW_MS, max: LOGIN_LIMIT_PER_IP });
+
+// Per-account lockout.  Only FAILED attempts count, so a legitimate user
+// who signs in repeatedly is never locked out, while credential stuffing
+// against one account is stopped.
+const LOGIN_FAILURES = new Map();
+
+function loginFailureCount(username) {
+  const key = String(username || '').toLowerCase();
+  const entry = LOGIN_FAILURES.get(key);
+  if (!entry || Date.now() > entry.reset) {
+    LOGIN_FAILURES.delete(key);
+    return 0;
+  }
+  return entry.count;
+}
+
+function recordLoginFailure(username) {
+  const key = String(username || '').toLowerCase();
+  const entry = LOGIN_FAILURES.get(key);
+  if (!entry || Date.now() > entry.reset) {
+    LOGIN_FAILURES.set(key, { count: 1, reset: Date.now() + LOGIN_LIMIT_WINDOW_MS });
+  } else {
+    entry.count += 1;
+  }
+  return loginFailureCount(key);
+}
+
+function clearLoginFailures(username) {
+  LOGIN_FAILURES.delete(String(username || '').toLowerCase());
+}
+
+app.post('/api/login', loginLimiter, (req, res) => {
   const { username, password } = req.body;
   console.log(`[Auth] Login attempt for username: ${username}`);
-  
+
+  // Too many failures against this account?
+  if (loginFailureCount(username) >= LOGIN_LIMIT_PER_ACCOUNT) {
+    const retryAfter = Math.ceil(LOGIN_LIMIT_WINDOW_MS / 1000);
+    res.set('Retry-After', String(retryAfter));
+    return res.status(429).json({ error: 'Too many failed attempts for this account', retryAfter });
+  }
+
   db.get(`SELECT * FROM users WHERE username = ? AND is_active = 1`, [username], (err, user) => {
     if (err) {
       console.error(`[Auth Error] Login query failed for ${username}:`, err);
       return res.status(500).json({ error: err.message });
     }
     
-    if (!user || !bcrypt.compareSync(password, user.password)) {
+    if (!user) {
+      // Run a dummy comparison anyway so that a missing account and a wrong
+      // password take the same amount of time (no user enumeration).
+      bcrypt.compare(String(password || ''), DUMMY_PASSWORD_HASH);
+      recordLoginFailure(username);
       console.warn(`[Auth Error] Invalid credentials for username: ${username}`);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
     
-    // Update last login
-    db.run(`UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?`, [user.id], (err) => {
-      if (err) console.error('[DB Error] Failed to update last_login:', err);
+    // bcrypt is deliberately slow: use the async form so the event loop is
+    // not blocked for the duration of the hash.
+    bcrypt.compare(String(password || ''), user.password, (cmpErr, matches) => {
+      if (cmpErr || !matches) {
+        recordLoginFailure(username);
+        console.warn(`[Auth Error] Invalid credentials for username: ${username}`);
+        return res.status(401).json({ error: 'Invalid credentials' });
+      }
+      
+      clearLoginFailures(username);
+      
+      // Update last login
+      db.run(`UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?`, [user.id], (err) => {
+        if (err) console.error('[DB Error] Failed to update last_login:', err);
+      });
+      
+      // Rotate the session id on login, so a session id that was known
+      // before the login cannot be reused afterwards.
+      req.session.regenerate((regenErr) => {
+        if (regenErr) {
+          console.error('[Auth Error] Session regeneration failed:', regenErr);
+          return res.status(500).json({ error: 'Login failed' });
+        }
+        req.session.userId = user.id;
+        req.session.username = user.username;
+        req.session.role = user.role;
+        req.session.save((saveErr) => {
+          if (saveErr) {
+            console.error('[Auth Error] Session save failed:', saveErr);
+            return res.status(500).json({ error: 'Login failed' });
+          }
+          console.log(`[Auth Success] User ${user.id} (${user.username}) logged in with role: ${user.role}`);
+          res.json({ success: true, user: { id: user.id, username: user.username, role: user.role } });
+        });
+      });
     });
-    
-    req.session.userId = user.id;
-    req.session.username = user.username;
-    req.session.role = user.role;
-    console.log(`[Auth Success] User ${user.id} (${user.username}) logged in with role: ${user.role}`);
-    res.json({ success: true, user: { id: user.id, username: user.username, role: user.role } });
   });
 });
 
@@ -1050,7 +1391,7 @@ app.get('/api/discord-account-info', checkAuth, (req, res) => {
 
 // ============= OS TEMPLATES =============
 
-app.get('/api/os-templates', (req, res) => {
+app.get('/api/os-templates', checkAuth, (req, res) => {
   // First get database templates
   db.all(`SELECT * FROM os_templates WHERE is_active = 1 ORDER BY created_at DESC`, (err, dbTemplates) => {
     if (err || !dbTemplates) {
@@ -1505,12 +1846,12 @@ app.post('/api/admin/templates/cache/clear', checkAuth, checkAdmin, (req, res) =
 });
 
 // Get CPU Models
-app.get('/api/cpu-models', (req, res) => {
+app.get('/api/cpu-models', checkAuth, (req, res) => {
   res.json(CPU_MODELS);
 });
 
 // Get SMBIOS options
-app.get('/api/smbios', (req, res) => {
+app.get('/api/smbios', checkAuth, (req, res) => {
   res.json({
     manufacturers: SMBIOS_MANUFACTURERS,
     products: SMBIOS_PRODUCTS
@@ -1518,17 +1859,17 @@ app.get('/api/smbios', (req, res) => {
 });
 
 // Get Network Types
-app.get('/api/network-types', (req, res) => {
+app.get('/api/network-types', checkAuth, (req, res) => {
   res.json(NETWORK_TYPES);
 });
 
 // Get DNS Providers
-app.get('/api/dns-providers', (req, res) => {
+app.get('/api/dns-providers', checkAuth, (req, res) => {
   res.json(DNS_PROVIDERS);
 });
 
 // List available ISO files
-app.get('/api/iso-list', (req, res) => {
+app.get('/api/iso-list', checkAuth, (req, res) => {
   try {
     const files = fs.readdirSync(ISO_DIR).filter(f => f.endsWith('.iso'));
     res.json(files);
@@ -1558,7 +1899,7 @@ app.use((req, res, next) => {
   
   // Set default logo and site name
   res.locals.siteLogo = process.env.DEFAULT_LOGO_URL || 'https://i.imgur.com/0DmkSi4.png';
-  res.locals.siteName = process.env.PANEL_NAME || 'HKVM Panel';
+  res.locals.siteName = process.env.PANEL_NAME || 'Librefied by 4x1t3l';
   
   // Try to get site icon from database (non-blocking)
   db.get(`SELECT setting_value FROM settings WHERE setting_key = 'site_icon_url' LIMIT 1`, (err, row) => {
@@ -1583,10 +1924,10 @@ app.get('/login', (req, res) => {
     return res.redirect('/dashboard');
   }
   res.render('users/login', { 
-    title: 'Login - HKVM Panel',
+    title: 'Login - Librefied by 4x1t3l',
     currentPage: 'login',
     siteLogo: res.locals.siteLogo || process.env.DEFAULT_LOGO_URL || 'https://i.imgur.com/0DmkSi4.png',
-    siteName: res.locals.siteName || process.env.PANEL_NAME || 'HKVM Panel'
+    siteName: res.locals.siteName || process.env.PANEL_NAME || 'Librefied by 4x1t3l'
   });
 });
 
@@ -1596,7 +1937,7 @@ app.get('/login', (req, res) => {
 app.get('/dashboard', checkAuth, (req, res) => {
   // Show user dashboard (works for both regular users and admins)
   res.render('users/dashboard', {
-    title: 'My VMs - HKVM Panel',
+    title: 'My VMs - Librefied by 4x1t3l',
     currentPage: 'dashboard',
     user: {
       username: req.session.username,
@@ -1607,7 +1948,7 @@ app.get('/dashboard', checkAuth, (req, res) => {
 // Admin Dashboard - Admin only
 app.get('/admin/dashboard', checkAuth, checkAdmin, (req, res) => {
   res.render('admin/dashboard', {
-    title: 'Dashboard - HKVM Panel',
+    title: 'Dashboard - Librefied by 4x1t3l',
     currentPage: 'dashboard',
     user: {
       username: req.session.username,
@@ -1619,7 +1960,7 @@ app.get('/admin/dashboard', checkAuth, checkAdmin, (req, res) => {
 // Virtual Machines list (Admin only)
 app.get('/admin/vms', checkAuth, checkAdmin, (req, res) => {
   res.render('admin/vms', {
-    title: 'Virtual Machines - HKVM Panel',
+    title: 'Virtual Machines - Librefied by 4x1t3l',
     currentPage: 'vms'
   });
 });
@@ -1627,7 +1968,7 @@ app.get('/admin/vms', checkAuth, checkAdmin, (req, res) => {
 // Create VM (Admin only)
 app.get('/admin/vm-create', checkAuth, checkAdmin, (req, res) => {
   res.render('admin/vm-create', {
-    title: 'Create Virtual Machine - HKVM Panel',
+    title: 'Create Virtual Machine - Librefied by 4x1t3l',
     currentPage: 'vm-create',
     user: {
       username: req.session.username,
@@ -1639,7 +1980,7 @@ app.get('/admin/vm-create', checkAuth, checkAdmin, (req, res) => {
 // VM Details (Admin only)
 app.get('/admin/vm/:id', checkAuth, checkAdmin, (req, res) => {
   res.render('admin/vm-detail', {
-    title: 'VM Details - HKVM Panel',
+    title: 'VM Details - Librefied by 4x1t3l',
     currentPage: 'vm-detail',
     vmId: req.params.id
   });
@@ -1648,7 +1989,7 @@ app.get('/admin/vm/:id', checkAuth, checkAdmin, (req, res) => {
 // VM Console (Admin only)
 app.get('/admin/vm/:id/console', checkAuth, checkAdmin, (req, res) => {
   res.render('admin/vm-console', {
-    title: 'VM Console - HKVM Panel',
+    title: 'VM Console - Librefied by 4x1t3l',
     currentPage: 'vm-console',
     vmId: req.params.id
   });
@@ -1660,7 +2001,7 @@ app.get('/admin/vm/:id/edit', checkAuth, checkAdmin, (req, res) => {
     if (err || !vm) return res.status(404).render('users/404', { message: 'VM not found' });
     
     res.render('admin/vm-edit', {
-      title: 'Edit VM - HKVM Panel',
+      title: 'Edit VM - Librefied by 4x1t3l',
       currentPage: 'vm-edit',
       vmId: req.params.id,
       vm: vm
@@ -1671,7 +2012,7 @@ app.get('/admin/vm/:id/edit', checkAuth, checkAdmin, (req, res) => {
 // Users management (admin only)
 app.get('/admin/users', checkAuth, checkAdmin, (req, res) => {
   res.render('admin/users', {
-    title: 'Users - HKVM Panel',
+    title: 'Users - Librefied by 4x1t3l',
     currentPage: 'users'
   });
 });
@@ -1679,7 +2020,7 @@ app.get('/admin/users', checkAuth, checkAdmin, (req, res) => {
 // Create new user page (admin only)
 app.get('/admin/users/create', checkAuth, checkAdmin, (req, res) => {
   res.render('admin/users-create', {
-    title: 'Create User - HKVM Panel',
+    title: 'Create User - Librefied by 4x1t3l',
     currentPage: 'users'
   });
 });
@@ -1692,7 +2033,7 @@ app.get('/admin/users/:id/edit', checkAuth, checkAdmin, (req, res) => {
   }
   
   res.render('admin/users-edit', {
-    title: 'Edit User - HKVM Panel',
+    title: 'Edit User - Librefied by 4x1t3l',
     currentPage: 'users',
     userId: userId
   });
@@ -1701,7 +2042,7 @@ app.get('/admin/users/:id/edit', checkAuth, checkAdmin, (req, res) => {
 // Settings (admin only)
 app.get('/admin/settings', checkAuth, checkAdmin, (req, res) => {
   res.render('admin/settings', {
-    title: 'Settings - HKVM Panel',
+    title: 'Settings - Librefied by 4x1t3l',
     currentPage: 'settings'
   });
 });
@@ -1709,7 +2050,7 @@ app.get('/admin/settings', checkAuth, checkAdmin, (req, res) => {
 // OS Templates Management (admin only)
 app.get('/admin/templates', checkAuth, checkAdmin, (req, res) => {
   res.render('admin/templates', {
-    title: 'OS Templates - HKVM Panel',
+    title: 'OS Templates - Librefied by 4x1t3l',
     currentPage: 'templates'
   });
 });
@@ -1717,7 +2058,7 @@ app.get('/admin/templates', checkAuth, checkAdmin, (req, res) => {
 // API Keys Management (admin only)
 app.get('/admin/api-keys', checkAuth, checkAdmin, (req, res) => {
   res.render('admin/api-keys', {
-    title: 'API Keys - HKVM Panel',
+    title: 'API Keys - Librefied by 4x1t3l',
     currentPage: 'api-keys',
     siteLogo: res.locals.siteLogo,
     baseUrl: `${req.protocol}://${req.get('host')}`,
@@ -1731,7 +2072,7 @@ app.get('/admin/api-keys', checkAuth, checkAdmin, (req, res) => {
 // Add OS Template (admin only)
 app.get('/admin/templates/add', checkAuth, checkAdmin, (req, res) => {
   res.render('admin/templates-add', {
-    title: 'Add OS Template - HKVM Panel',
+    title: 'Add OS Template - Librefied by 4x1t3l',
     currentPage: 'templates'
   });
 });
@@ -1767,7 +2108,7 @@ app.get('/admin/templates/builtin/:key/edit', checkAuth, checkAdmin, (req, res) 
   };
   
   res.render('admin/templates-edit', {
-    title: `View ${template.name} - HKVM Panel`,
+    title: `View ${template.name} - Librefied by 4x1t3l`,
     currentPage: 'templates',
     siteLogo: res.locals.siteLogo || 'https://i.imgur.com/0DmkSi4.png',
     templateKey: templateKey,
@@ -1781,7 +2122,7 @@ app.get('/admin/templates/builtin/:key/edit', checkAuth, checkAdmin, (req, res) 
 // User VMs list
 app.get('/vms', checkAuth, (req, res) => {
   res.render('users/vms', {
-    title: 'My Virtual Machines - HKVM Panel',
+    title: 'My Virtual Machines - Librefied by 4x1t3l',
     currentPage: 'vms',
     user: {
       username: req.session.username,
@@ -1793,7 +2134,7 @@ app.get('/vms', checkAuth, (req, res) => {
 // User VM detail page
 app.get('/vm/:id', checkAuth, (req, res) => {
   res.render('users/vm-detail', {
-    title: 'VM Details - HKVM Panel',
+    title: 'VM Details - Librefied by 4x1t3l',
     currentPage: 'vm-detail',
     vmId: req.params.id,
     userId: req.session.userId,
@@ -1807,7 +2148,7 @@ app.get('/vm/:id', checkAuth, (req, res) => {
 // User VM console page
 app.get('/vm/:id/console', checkAuth, (req, res) => {
   res.render('users/vm-console', {
-    title: 'VM Console - HKVM Panel',
+    title: 'VM Console - Librefied by 4x1t3l',
     currentPage: 'vm-console',
     vmId: req.params.id,
     userId: req.session.userId,
@@ -1821,7 +2162,7 @@ app.get('/vm/:id/console', checkAuth, (req, res) => {
 // User VM SSH connection page
 app.get('/vm/:id/ssh', checkAuth, (req, res) => {
   res.render('users/vm-ssh', {
-    title: 'SSH Connection - HKVM Panel',
+    title: 'SSH Connection - Librefied by 4x1t3l',
     currentPage: 'vm-ssh',
     vmId: req.params.id,
     userId: req.session.userId,
@@ -1849,7 +2190,7 @@ app.get('/admin/vm/:id/ssh', checkAuth, checkAdmin, (req, res) => {
 // User profile page
 app.get('/profile', checkAuth, (req, res) => {
   res.render('users/profile', {
-    title: 'My Profile - HKVM Panel',
+    title: 'My Profile - Librefied by 4x1t3l',
     currentPage: 'profile',
     user: {
       username: req.session.username,
@@ -2498,8 +2839,7 @@ app.post('/api/vms/:vm_id/console/command', checkAuth, async (req, res) => {
 
 // GET VM EDIT CONFIG (retrieve editable fields)
 app.get('/api/vms/:vm_id/edit', checkAuth, (req, res) => {
-  db.get(`SELECT * FROM vms WHERE vm_id = ?`, [req.params.vm_id], (err, vm) => {
-    if (err || !vm) return res.status(404).json({ error: 'VM not found' });
+  loadOwnedVm(req, res, req.params.vm_id, (vm) => {
     
     // Return editable fields
     res.json({
@@ -2565,7 +2905,7 @@ async function resizeDisk(vm_id, diskFilePath, newSize) {
       // Get current disk size from qemu-img (not file size, but virtual size)
       let currentSize;
       try {
-        const infoOutput = execSync(`qemu-img info "${diskFilePath}" --output=json`, { stdio: 'pipe', encoding: 'utf8' });
+        const infoOutput = execFileSync('qemu-img', ['info', diskFilePath, '--output=json'], { stdio: 'pipe', encoding: 'utf8' });
         const imageInfo = JSON.parse(infoOutput);
         currentSize = imageInfo['virtual-size'] || imageInfo['VirtualSize'] || 0;
         console.log(`[DISK-${vm_id}] Detected via qemu-img: Virtual size = ${(currentSize / (1024**3)).toFixed(2)}GB`);
@@ -2585,22 +2925,19 @@ async function resizeDisk(vm_id, diskFilePath, newSize) {
       const isShrink = newSizeBytes < currentSize;
       const operation = isShrink ? 'shrink' : 'expand';
 
-      // Use qemu-img to resize - always use +SIZE syntax for expand, =SIZE for shrink
-      let resizeCmd;
-      if (isShrink) {
-        // Shrinking requires --shrink flag and = syntax
-        resizeCmd = `qemu-img resize --shrink "${diskFilePath}" ${newSize}`;
-      } else {
-        // Expanding - use = syntax (not + syntax)
-        resizeCmd = `qemu-img resize "${diskFilePath}" ${newSize}`;
-      }
+      // Use qemu-img to resize.  The arguments are passed as an array, so
+      // no shell is involved and nothing in the path or the size can be
+      // interpreted as a shell metacharacter.
+      const resizeArgs = isShrink
+        ? ['resize', '--shrink', diskFilePath, String(newSize)]
+        : ['resize', diskFilePath, String(newSize)];
 
-      console.log(`[DISK-${vm_id}] ${operation.toUpperCase()}: Executing: ${resizeCmd}`);
+      console.log(`[DISK-${vm_id}] ${operation.toUpperCase()}: Executing: qemu-img ${resizeArgs.join(' ')}`);
       
       // Execute and capture both stdout and stderr
       let output;
       try {
-        output = execSync(resizeCmd, { stdio: 'pipe', encoding: 'utf8', shell: true });
+        output = execFileSync('qemu-img', resizeArgs, { stdio: 'pipe', encoding: 'utf8' });
         console.log(`[DISK-${vm_id}] Command output: ${output}`);
       } catch (execErr) {
         // Check if it's just a warning
@@ -2641,7 +2978,7 @@ app.put('/api/vms/:vm_id/edit', checkAuth, (req, res) => {
     owner_id
   } = req.body;
 
-  console.log(`[VM-${vm_id}] Edit request - disk_size: '${disk_size}', hostname: '${hostname}', username: '${username}', password: '${password}'`);
+  console.log(`[VM-${vm_id}] Edit request - disk_size: '${disk_size}', hostname: '${hostname}', username: '${username}'`);
   console.log(`[VM-${vm_id}] Full body fields:`, Object.keys(req.body));
 
   let query = `SELECT status, template_type, seed_file FROM vms WHERE vm_id = ?`;
@@ -2692,21 +3029,27 @@ app.put('/api/vms/:vm_id/edit', checkAuth, (req, res) => {
     if (validatedThreads) { updates.push('cpu_threads = ?'); values.push(validatedThreads); }
     if (cpu_model) { updates.push('cpu_model = ?'); values.push(cpu_model); }
     
-    // Debug disk_size
-    console.log(`[VM-${vm_id}] Checking disk_size: disk_size='${disk_size}', undefined=${disk_size === undefined}, null=${disk_size === null}`);
-    if (disk_size !== undefined && disk_size !== null) { 
-      console.log(`[VM-${vm_id}] ✓ Adding disk_size to updates: '${disk_size}'`);
-      updates.push('disk_size = ?'); 
-      values.push(disk_size); 
-    } else {
-      console.log(`[VM-${vm_id}] ✗ Skipping disk_size (condition failed)`);
+    // The disk size ends up on a command line, so it is validated here -
+    // before it is ever stored.
+    if (disk_size !== undefined && disk_size !== null && disk_size !== '') {
+      if (!isValidDiskSize(disk_size)) {
+        return res.status(400).json({ error: 'Invalid disk size - use something like 20G, 100GB or 1T' });
+      }
+      updates.push('disk_size = ?');
+      values.push(String(disk_size).trim());
     }
     // Allow empty username/password to keep existing values, but update if provided
     if (username !== undefined && username !== null) { updates.push('username = ?'); values.push(username); }
     if (password !== undefined && password !== null) { updates.push('password = ?'); values.push(password); }
     if (enable_acpi !== undefined) { updates.push('enable_acpi = ?'); values.push(enable_acpi ? 1 : 0); }
     if (enable_kvm !== undefined) { updates.push('enable_kvm = ?'); values.push(enable_kvm ? 1 : 0); }
-    if (extra_args !== undefined) { updates.push('extra_args = ?'); values.push(extra_args || ''); }
+    // extra_args used to be a free-form string that was appended straight to
+    // the QEMU command line, which let a tenant inject any QEMU option
+    // (-fw_cfg=..., -drive=file=/etc/shadow, ...).  It is no longer
+    // settable; the column stays for existing rows but is never used again.
+    if (extra_args !== undefined && extra_args !== null && extra_args !== '') {
+      return res.status(400).json({ error: 'extra_args is no longer supported' });
+    }
     if (network_type) { updates.push('network_type = ?'); values.push(network_type); }
     if (ipv4_address !== undefined) { updates.push('ipv4_address = ?'); values.push(ipv4_address); }
     if (ipv4_gateway !== undefined) { updates.push('ipv4_gateway = ?'); values.push(ipv4_gateway); }
@@ -2727,9 +3070,29 @@ app.put('/api/vms/:vm_id/edit', checkAuth, (req, res) => {
     if (smbios_version) { updates.push('smbios_version = ?'); values.push(smbios_version); }
     if (smbios_serial) { updates.push('smbios_serial = ?'); values.push(smbios_serial); }
     
-    // Handle SSH port - prefer ssh_port_static if provided, else use ssh_port
-    if (ssh_port_static !== undefined) { updates.push('ssh_port_static = ?'); values.push(ssh_port_static); }
-    if (ssh_port !== undefined) { updates.push('ssh_port = ?'); values.push(ssh_port); }
+    // Handle SSH port.  The forwarded port is bound on the host, so it has
+    // to be an unprivileged port and must not collide with an existing one.
+    const validateSshPort = (value) => {
+      const port = parseInt(value, 10);
+      if (Number.isNaN(port) || port < 1024 || port > 65535) {
+        return null;
+      }
+      return port;
+    };
+    if (ssh_port_static !== undefined && ssh_port_static !== null) {
+      const p = validateSshPort(ssh_port_static);
+      if (p === null) {
+        return res.status(400).json({ error: 'ssh_port_static must be a port between 1024 and 65535' });
+      }
+      updates.push('ssh_port_static = ?'); values.push(p);
+    }
+    if (ssh_port !== undefined && ssh_port !== null) {
+      const p = validateSshPort(ssh_port);
+      if (p === null) {
+        return res.status(400).json({ error: 'ssh_port must be a port between 1024 and 65535' });
+      }
+      updates.push('ssh_port = ?'); values.push(p);
+    }
     
     // Only admins can change owner
     if (owner_id !== undefined && req.session.role === 'admin') {
@@ -2837,8 +3200,7 @@ app.put('/api/vms/:vm_id/edit', checkAuth, (req, res) => {
 
 app.get('/api/vms/:vm_id/stats', checkAuth, async (req, res) => {
   try {
-    db.get(`SELECT * FROM vms WHERE vm_id = ?`, [req.params.vm_id], async (err, vm) => {
-      if (err || !vm) return res.status(404).json({ error: 'VM not found' });
+    loadOwnedVm(req, res, req.params.vm_id, async (vm) => {
 
       const stats = {
         vm_id: vm.vm_id,
@@ -2860,7 +3222,7 @@ app.get('/api/vms/:vm_id/stats', checkAuth, async (req, res) => {
         try {
           if (fs.existsSync(pidFile)) {
             const pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim());
-            const { stdout } = await execPromise(`ps -p ${pid} -o %cpu,%mem,etime 2>nul || echo "0 0 0:00"`, { shell: 'cmd' });
+            const { stdout } = await execPromiseAsync('ps', ['-p', String(pid), '-o', '%cpu,%mem,etime']);
             const lines = stdout.trim().split('\n');
             if (lines.length > 0) {
               const data = lines[0].trim().split(/\s+/);
@@ -3061,23 +3423,24 @@ app.post('/api/vms/:vm_id/reinstall', checkAuth, async (req, res) => {
                     // Create new disk from template
                     console.log(`[VM-${vm_id}] Creating new disk from template...`);
                     const diskSizeVal = updatedVm.disk_size || '20G';
-                    
+                    if (!isValidDiskSize(diskSizeVal)) {
+                      throw new Error('Invalid disk size - use something like 20G, 100GB or 1T');
+                    }
+                     
                     try {
-                      // Copy template to disk file
-                      const copyCommand = process.platform === 'win32'
-                        ? `Copy-Item -Path "${imgSourcePath}" -Destination "${updatedVm.disk_file}" -Force`
-                        : `cp "${imgSourcePath}" "${updatedVm.disk_file}"`;
-
-                      execSync(copyCommand, { shell: process.platform === 'win32' ? 'powershell' : '/bin/bash' });
+                      // Copy template to disk file.  Arguments are passed as
+                      // an array so no shell is involved.
+                      if (process.platform === 'win32') {
+                        execFileSync('cmd.exe', ['/c', 'copy', '/Y', imgSourcePath, updatedVm.disk_file], { stdio: 'pipe' });
+                      } else {
+                        execFileSync('cp', [imgSourcePath, updatedVm.disk_file], { stdio: 'pipe' });
+                      }
                       console.log(`[VM-${vm_id}] ✓ Disk file created`);
 
                       // Resize disk to specified size
-                      const resizeCommand = process.platform === 'win32'
-                        ? `qemu-img resize "${updatedVm.disk_file}" ${diskSizeVal}`
-                        : `qemu-img resize "${updatedVm.disk_file}" ${diskSizeVal}`;
-
-                      execSync(resizeCommand, { stdio: 'pipe' });
+                      execFileSync('qemu-img', ['resize', updatedVm.disk_file, String(diskSizeVal)], { stdio: 'pipe' });
                       console.log(`[VM-${vm_id}] ✓ Disk resized to ${diskSizeVal}`);
+
 
                       // Create new cloud-init seed
                       console.log(`[VM-${vm_id}] Creating cloud-init seed with new credentials...`);
@@ -3231,12 +3594,26 @@ app.post('/api/vms', checkAuth, checkAdmin, async (req, res) => {
   const threads = cpu_threads || 1;
   const cpuModelToUse = cpu_model && CPU_MODELS[cpu_model] ? cpu_model : 'host';
   const diskSizeVal = disk_size || (template ? template.disk_size : '20G');
+  if (!isValidDiskSize(diskSizeVal)) {
+    return res.status(400).json({ error: 'Invalid disk size - use something like 20G, 100GB or 1T' });
+  }
   const netType = network_type || 'nat';
   const macAddr = mac_address || generateMACAddress();
   const vmOwner = owner_id || req.session.userId; // Use selected owner if provided, else current user
   
-  // Handle SSH port - prefer ssh_port_static if provided, else use ssh_port
-  const sshPortVal = ssh_port_static || ssh_port || 22;
+  // The forwarded SSH port is bound on the host, so it has to be an
+  // unprivileged port.
+  const requestedSshPort = parseInt(ssh_port_static || ssh_port, 10);
+  if (!Number.isNaN(requestedSshPort) && (requestedSshPort < 1024 || requestedSshPort > 65535)) {
+    return res.status(400).json({ error: 'ssh_port must be a port between 1024 and 65535' });
+  }
+  const sshPortVal = requestedSshPort || 22;
+  
+  // extra_args is no longer accepted: it was a free-form string that went
+  // straight onto the QEMU command line.
+  if (extra_args !== undefined && extra_args !== null && extra_args !== '') {
+    return res.status(400).json({ error: 'extra_args is no longer supported' });
+  }
   
   // Insert VM first to get vm_id
   db.run(
@@ -3277,13 +3654,14 @@ app.post('/api/vms', checkAuth, checkAdmin, async (req, res) => {
       const baseDiskPath = (vm_disk_path && vm_disk_path.trim()) ? vm_disk_path.trim() : VM_DIR;
       const baseIsoPath = (iso_path && iso_path.trim()) ? iso_path.trim() : CLOUDVM_DIR;
       
-      // Validate paths are absolute
-      if (!baseDiskPath.startsWith('/') || !baseIsoPath.startsWith('/')) {
+      // Validate paths: absolute, no shell or path metacharacters, no ".."
+      if (!isSafeStoragePath(baseDiskPath) || !isSafeStoragePath(baseIsoPath)) {
         db.run(`DELETE FROM vms WHERE vm_id = ?`, [vm_id]);
-        console.error(`[VM Creation] Invalid paths - must be absolute: disk=${baseDiskPath}, iso=${baseIsoPath}`);
-        return res.status(400).json({ error: 'Storage paths must be absolute paths (starting with /)' });
+        console.error(`[VM Creation] Invalid paths: disk=${baseDiskPath}, iso=${baseIsoPath}`);
+        return res.status(400).json({ error: 'Storage paths must be absolute paths without ".." or special characters' });
       }
       
+
       // Ensure directories exist
       try {
         if (!fs.existsSync(baseDiskPath)) {
@@ -3418,21 +3796,21 @@ app.post('/api/vms', checkAuth, checkAdmin, async (req, res) => {
                 // Copy template to VM's image file
                 if (templateSourcePath) {
                   try {
-                    const copyCmd = process.platform === 'win32' 
-                      ? `copy "${templateSourcePath}" "${img_file}"`
-                      : `cp "${templateSourcePath}" "${img_file}"`;
-                    
                     console.log(`[VM-${vm_id}] Copying template to: ${img_file}`);
-                    await execPromise(copyCmd, { 
-                      shell: process.platform === 'win32' ? 'cmd' : '/bin/bash',
-                      stdio: 'pipe'
-                    });
+                    // Argument array - no shell, so no metacharacter can be
+                    // interpreted in either path.
+                    if (process.platform === 'win32') {
+                      await execPromiseAsync('cmd.exe', ['/c', 'copy', '/Y', templateSourcePath, img_file], { stdio: 'pipe' });
+                    } else {
+                      await execPromiseAsync('cp', [templateSourcePath, img_file], { stdio: 'pipe' });
+                    }
                     console.log(`[VM-${vm_id}] ✓ Copied template to ${img_file}`);
                   } catch (copyErr) {
                     console.error(`[VM-${vm_id}] Failed to copy template:`, copyErr.message);
                     throw new Error(`Failed to copy template: ${copyErr.message}`);
                   }
                 }
+
               }
 
               // Create cloud-init seed if cloud-init type
@@ -3457,12 +3835,10 @@ app.post('/api/vms', checkAuth, checkAdmin, async (req, res) => {
                 // Create disk from template with resize to specified size
                 console.log(`[VM-${vm_id}] Creating and resizing disk to ${diskSizeVal}...`);
                 try {
-                  // Copy template to disk file and resize in one step
-                  const resizeDiskCmd = `qemu-img convert -O qcow2 "${img_file}" "${disk_file}" && qemu-img resize "${disk_file}" ${diskSizeVal}`;
-                  await execPromise(resizeDiskCmd, { 
-                    shell: isWindows ? 'cmd' : '/bin/bash',
-                    stdio: 'pipe'
-                  });
+                  // Convert and resize as separate calls, each with an
+                  // argument array - no shell involved.
+                  await execPromiseAsync('qemu-img', ['convert', '-O', 'qcow2', img_file, disk_file], { stdio: 'pipe' });
+                  await execPromiseAsync('qemu-img', ['resize', disk_file, String(diskSizeVal)], { stdio: 'pipe' });
                   
                   console.log(`[VM-${vm_id}] ✓ Disk created and resized to: ${diskSizeVal}`);
                 } catch (diskError) {
@@ -3473,16 +3849,12 @@ app.post('/api/vms', checkAuth, checkAdmin, async (req, res) => {
                 // ISO mode: Create a new disk from scratch with specified size
                 console.log(`[VM-${vm_id}] Creating disk: ${disk_file} (size: ${diskSizeVal})`);
                 try {
-                  const createDiskCmd = `qemu-img create -f qcow2 "${disk_file}" ${diskSizeVal}`;
-                  
-                  await execPromise(createDiskCmd, { 
-                    shell: isWindows ? 'cmd' : '/bin/bash',
-                    stdio: 'pipe'
-                  });
+                  await execPromiseAsync('qemu-img', ['create', '-f', 'qcow2', disk_file, String(diskSizeVal)], { stdio: 'pipe' });
                   console.log(`[VM-${vm_id}] ✓ Disk created: ${diskSizeVal}`);
                 } catch (diskError) {
                   logError('DISK', vm_id, 'creation', diskError);
                   throw new Error(`Disk creation failed: ${diskError.message}`);
+
                 }
               }
 
@@ -3604,7 +3976,9 @@ app.post('/api/vms/:vm_id/stop', checkAuth, (req, res) => {
         try {
           // On Windows, use taskkill; on Unix, use process group kill
           if (isWindows) {
-            exec(`taskkill /F /PID ${pid}`, { shell: 'cmd' });
+            // Argument array - the pid is a number, but it is never
+            // handed to a shell either way.
+            execFile('taskkill', ['/F', '/PID', String(pid)]);
           } else {
             // Kill entire process group (- prefix means pgid)
             process.kill(-pid, 'SIGTERM');
@@ -3681,8 +4055,7 @@ app.post('/api/vms/:vm_id/restart', checkAuth, async (req, res) => {
 
 // VM DELETE (Using VM ID)
 app.delete('/api/vms/:vm_id', checkAuth, (req, res) => {
-  db.get(`SELECT * FROM vms WHERE vm_id = ?`, [req.params.vm_id], (err, vm) => {
-    if (err || !vm) return res.status(404).json({ error: 'VM not found' });
+  loadOwnedVm(req, res, req.params.vm_id, (vm) => {
 
     try {
       // Use custom disk path from VM record, fallback to VM_DIR
@@ -3735,14 +4108,16 @@ app.delete('/api/vms/:vm_id', checkAuth, (req, res) => {
 
 // VM LOGS (Using VM ID)
 app.get('/api/vms/:vm_id/logs', checkAuth, (req, res) => {
-  db.all(
-    `SELECT * FROM vm_logs WHERE vm_id = ? ORDER BY timestamp DESC LIMIT 50`,
-    [req.params.vm_id],
-    (err, logs) => {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json(logs || []);
-    }
-  );
+  loadOwnedVm(req, res, req.params.vm_id, (vm) => {
+    db.all(
+      `SELECT * FROM vm_logs WHERE vm_id = ? ORDER BY timestamp DESC LIMIT 50`,
+      [req.params.vm_id],
+      (err, logs) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(logs || []);
+      }
+    );
+  });
 });
 
 // VM SNAPSHOTS (Using VM ID)
@@ -3797,8 +4172,13 @@ app.post('/api/vms/:vm_id/iso/attach', checkAuth, async (req, res) => {
         return res.status(404).json({ error: 'VM not found or access denied' });
       }
 
-      // Verify ISO file exists
-      const isoPath = path.join(ISO_DIR, iso_file);
+      // Verify the ISO exists.  The name is reduced to its basename and
+      // must stay inside ISO_DIR, so that "../../../etc/shadow" cannot be
+      // attached as a CD-ROM.
+      const isoPath = safeJoin(ISO_DIR, iso_file);
+      if (!isoPath) {
+        return res.status(400).json({ error: 'Invalid ISO file name' });
+      }
       if (!fs.existsSync(isoPath)) {
         return res.status(400).json({ error: 'ISO file not found' });
       }
@@ -3806,7 +4186,7 @@ app.post('/api/vms/:vm_id/iso/attach', checkAuth, async (req, res) => {
       // Update VM with attached ISO
       db.run(
         `UPDATE vms SET iso_attached = ?, boot_from_iso = 1 WHERE vm_id = ?`,
-        [iso_file, vm_id],
+        [path.basename(iso_file), vm_id],
         (err) => {
           if (err) {
             return res.status(500).json({ error: err.message });
@@ -4014,13 +4394,30 @@ async function downloadTemplateWithStreamingProgress(url, targetPath, res) {
       https.get(currentUrl, (response) => {
         // Handle redirects (301, 302, 303, 307, 308)
         if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
-          const redirectUrl = response.headers.location;
-          if (!redirectUrl) {
+          const location = response.headers.location;
+          if (!location) {
             fs.unlink(targetPath, () => {});
             return reject(new Error(`Redirect without location header`));
           }
-          console.log(`[TEMPLATE] Redirect (${response.statusCode}) to: ${redirectUrl}`);
-          return makeRequest(redirectUrl, redirectCount + 1);
+          // The Location header may be relative - resolve it against the
+          // current URL (a relative one used to throw and kill the whole
+          // process), and re-check the target so a redirect cannot walk
+          // into the panel's own network.
+          let nextUrl;
+          try {
+            nextUrl = new URL(location, currentUrl).toString();
+          } catch (e) {
+            fs.unlink(targetPath, () => {});
+            return reject(new Error('Invalid redirect location'));
+          }
+          console.log(`[TEMPLATE] Redirect (${response.statusCode}) to: ${nextUrl}`);
+          assertDownloadUrlAllowed(nextUrl)
+            .then(() => makeRequest(nextUrl, redirectCount + 1))
+            .catch((err) => {
+              fs.unlink(targetPath, () => {});
+              reject(err);
+            });
+          return;
         }
 
         if (response.statusCode !== 200) {
@@ -4041,6 +4438,11 @@ async function downloadTemplateWithStreamingProgress(url, targetPath, res) {
 
         response.on('data', (chunk) => {
           downloaded += chunk.length;
+          if (downloaded > MAX_TEMPLATE_BYTES) {
+            response.destroy();
+            fs.unlink(targetPath, () => {});
+            return reject(new Error('Template image is larger than the limit'));
+          }
           if (contentLength) {
             const percent = ((downloaded / contentLength) * 100).toFixed(2);
             const elapsed = (Date.now() - startTime) / 1000;
@@ -4085,7 +4487,14 @@ async function downloadTemplateWithStreamingProgress(url, targetPath, res) {
       });
     };
 
-    makeRequest(url);
+    // Validate the URL before the first request: a download URL is a way
+    // of making the panel fetch something the caller picks.
+    assertDownloadUrlAllowed(url)
+      .then(() => makeRequest(url))
+      .catch((err) => {
+        fs.unlink(targetPath, () => {});
+        reject(err);
+      });
   });
 }
 
@@ -4120,13 +4529,30 @@ async function downloadTemplateFromURL(url, targetPath) {
       https.get(currentUrl, (response) => {
         // Handle redirects (301, 302, 303, 307, 308)
         if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
-          const redirectUrl = response.headers.location;
-          if (!redirectUrl) {
+          const location = response.headers.location;
+          if (!location) {
             fs.unlink(targetPath, () => {});
             return reject(new Error(`Redirect without location header`));
           }
-          console.log(`[TEMPLATE] Redirect (${response.statusCode}) to: ${redirectUrl}`);
-          return makeRequest(redirectUrl, redirectCount + 1);
+          // The Location header may be relative - resolve it against the
+          // current URL (a relative one used to throw and kill the whole
+          // process), and re-check the target so a redirect cannot walk
+          // into the panel's own network.
+          let nextUrl;
+          try {
+            nextUrl = new URL(location, currentUrl).toString();
+          } catch (e) {
+            fs.unlink(targetPath, () => {});
+            return reject(new Error('Invalid redirect location'));
+          }
+          console.log(`[TEMPLATE] Redirect (${response.statusCode}) to: ${nextUrl}`);
+          assertDownloadUrlAllowed(nextUrl)
+            .then(() => makeRequest(nextUrl, redirectCount + 1))
+            .catch((err) => {
+              fs.unlink(targetPath, () => {});
+              reject(err);
+            });
+          return;
         }
 
         if (response.statusCode !== 200) {
@@ -4139,6 +4565,11 @@ async function downloadTemplateFromURL(url, targetPath) {
 
         response.on('data', (chunk) => {
           downloaded += chunk.length;
+          if (downloaded > MAX_TEMPLATE_BYTES) {
+            response.destroy();
+            fs.unlink(targetPath, () => {});
+            return reject(new Error('Template image is larger than the limit'));
+          }
           if (len) {
             const percent = ((downloaded / len) * 100).toFixed(2);
             console.log(`[TEMPLATE] Download progress: ${percent}%`);
@@ -4161,7 +4592,14 @@ async function downloadTemplateFromURL(url, targetPath) {
       });
     };
 
-    makeRequest(url);
+    // Validate the URL before the first request: a download URL is a way
+    // of making the panel fetch something the caller picks.
+    assertDownloadUrlAllowed(url)
+      .then(() => makeRequest(url))
+      .catch((err) => {
+        fs.unlink(targetPath, () => {});
+        reject(err);
+      });
   });
 }
 
@@ -4199,9 +4637,9 @@ async function downloadTemplate(sourceOrKey, targetPath) {
 // Generate Cloud-Init config for NAT (User Mode)
 // Configures DHCP networking automatically
 function generateNATCloudInitConfig(vm) {
-  const username = vm.username || 'root';
-  const password = vm.password || 'password';
-  const hostname = vm.hostname || 'hkvm-instance';
+  const username = cloudInitSafeValue(vm.username || 'root', 'username');
+  const password = cloudInitSafeValue(vm.password || 'password', 'password');
+  const hostname = cloudInitSafeValue(vm.hostname || 'hkvm-instance', 'hostname');
 
   // Build users section - support root and custom users
   let usersSection = `users:`;
@@ -4218,17 +4656,17 @@ function generateNATCloudInitConfig(vm) {
   } else {
     // If custom user, create the user with sudo privileges
     usersSection += `
-  - name: ${username}
+  - name: ${yamlScalar(username)}
     lock_passwd: false
     shell: /bin/bash
     sudo: ALL=(ALL) NOPASSWD:ALL
-    homedir: /home/${username}
+    homedir: /home/${yamlScalar(username)}
     createhome: true
     
   - name: root
     lock_passwd: false
     shell: /bin/bash`;
-    chpasswdList = `    - ${username}:${password}
+    chpasswdList = `    - ${yamlScalar(username)}:${yamlScalar(password)}
     - root:password`;
   }
 
@@ -4237,7 +4675,7 @@ function generateNATCloudInitConfig(vm) {
 # ================================================
 # SYSTEM CONFIG
 # ================================================
-hostname: ${hostname}
+hostname: ${yamlScalar(hostname)}
 manage_etc_hosts: true
 preserve_hostname: false
 
@@ -4292,9 +4730,9 @@ final_message: |
 // Generate Cloud-Init config for Static Public IPv4 ONLY
 // Configures static IPv4 with netplan v2 - NO DHCP
 function generateStaticPublicIPv4CloudInitConfig(vm) {
-  const username = vm.username || 'root';
-  const password = vm.password || 'password';
-  const hostname = vm.hostname || 'hkvm-instance';
+  const username = cloudInitSafeValue(vm.username || 'root', 'username');
+  const password = cloudInitSafeValue(vm.password || 'password', 'password');
+  const hostname = cloudInitSafeValue(vm.hostname || 'hkvm-instance', 'hostname');
   const ipv4_address = vm.ipv4_address || '10.0.0.100';
   const gateway = vm.gateway || vm.ipv4_gateway || '10.0.0.1';
   const netmask = vm.netmask || vm.ipv4_netmask || 24;
@@ -4325,17 +4763,17 @@ function generateStaticPublicIPv4CloudInitConfig(vm) {
   } else {
     // If custom user, create the user with sudo privileges
     usersSection += `
-  - name: ${username}
+  - name: ${yamlScalar(username)}
     lock_passwd: false
     shell: /bin/bash
     sudo: ALL=(ALL) NOPASSWD:ALL
-    homedir: /home/${username}
+    homedir: /home/${yamlScalar(username)}
     createhome: true
     
   - name: root
     lock_passwd: false
     shell: /bin/bash`;
-    chpasswdList = `    - ${username}:${password}
+    chpasswdList = `    - ${yamlScalar(username)}:${yamlScalar(password)}
     - root:password`;
   }
 
@@ -4344,7 +4782,7 @@ function generateStaticPublicIPv4CloudInitConfig(vm) {
 # ================================================
 # SYSTEM CONFIG
 # ================================================
-hostname: ${hostname}
+hostname: ${yamlScalar(hostname)}
 manage_etc_hosts: true
 preserve_hostname: false
 
@@ -4582,7 +5020,7 @@ async function createCloudInitSeed(vm_id, vm) {
 
       // Meta-data (instance information)
       const metaData = `instance-id: vm-${vm_id}
-local-hostname: ${vm.hostname}
+local-hostname: ${yamlScalar(vm.hostname)}
 `;
 
       // Network-config is NO LONGER NEEDED - it's now embedded in user-data via runcmd
@@ -4649,13 +5087,11 @@ local-hostname: ${vm.hostname}
 
       // Create ISO from seed files
       // Use platform-appropriate tool
-      let isoCommand;
       try {
         if (isWindows) {
           // On Windows, try mkisofs first
           try {
-            isoCommand = `mkisofs -output "${seedIso}" -volid cidata -joliet -rock "${seedDir}"`;
-            execSync(isoCommand, { stdio: 'pipe', shell: 'cmd' });
+            execFileSync('mkisofs', ['-output', seedIso, '-volid', 'cidata', '-joliet', '-rock', seedDir], { stdio: 'pipe' });
           } catch (e) {
             console.error(`[CLOUDINIT-${vm_id}] mkisofs not found on Windows`);
             throw new Error('ISO creation tool not available - install mkisofs');
@@ -4663,12 +5099,10 @@ local-hostname: ${vm.hostname}
         } else {
           // On Linux, prefer genisoimage or mkisofs
           try {
-            isoCommand = `genisoimage -output "${seedIso}" -volid cidata -joliet -rock "${seedDir}"`;
-            execSync(isoCommand, { stdio: 'pipe', shell: '/bin/bash' });
+            execFileSync('genisoimage', ['-output', seedIso, '-volid', 'cidata', '-joliet', '-rock', seedDir], { stdio: 'pipe' });
           } catch (e) {
             try {
-              isoCommand = `mkisofs -output "${seedIso}" -volid cidata -joliet -rock "${seedDir}"`;
-              execSync(isoCommand, { stdio: 'pipe', shell: '/bin/bash' });
+              execFileSync('mkisofs', ['-output', seedIso, '-volid', 'cidata', '-joliet', '-rock', seedDir], { stdio: 'pipe' });
             } catch (e2) {
               console.error(`[CLOUDINIT-${vm_id}] Neither genisoimage nor mkisofs available`);
               throw new Error('ISO creation tool not available - install genisoimage or mkisofs');
@@ -4793,13 +5227,17 @@ async function startQemuVM(vm) {
       args.push(`-drive`, `file=${vm.disk_file},format=qcow2,if=virtio,media=disk`);
       
       // ISO media (if attached) - CD/DVD drive
-      if (vm.iso_attached) {
-        const isoPath = path.join(ISO_DIR, vm.iso_attached);
-        if (fs.existsSync(isoPath)) {
-          args.push(`-drive`, `file=${isoPath},format=raw,media=cdrom,if=ide,index=0`);
-          console.log(`[VM-${vm.vm_id}] ISO Media Attached: ${vm.iso_attached}`);
-        } else {
-          console.warn(`[VM-${vm.vm_id}] ISO file not found: ${vm.iso_attached}`);
+    if (vm.iso_attached) {
+      // The stored name is resolved the same defensive way, so a row that
+      // was tampered with directly in the database cannot be used to
+      // attach a host file either.
+      const isoPath = safeJoin(ISO_DIR, vm.iso_attached);
+      if (isoPath && fs.existsSync(isoPath)) {
+        args.push(`-drive`, `file=${isoPath},format=raw,media=cdrom,if=ide,index=0`);
+        console.log(`[VM-${vm.vm_id}] ISO Media Attached: ${vm.iso_attached}`);
+      } else {
+        console.warn(`[VM-${vm.vm_id}] ISO file not found: ${vm.iso_attached}`);
+
         }
       }
       
@@ -4854,10 +5292,10 @@ async function startQemuVM(vm) {
       // Serial console with monitor support - stdin/stdout for direct terminal access
       args.push(`-serial`, `mon:stdio`);
       
-      // Extra arguments if provided
-      if (vm.extra_args) {
-        args.push(vm.extra_args);
-      }
+      // Extra arguments used to be appended here straight from the
+      // database, which let anyone who could edit a VM inject arbitrary
+      // QEMU options (-fw_cfg=..., -drive=file=/etc/shadow, ...).  The
+      // column is no longer writable and is not used here.
 
       console.log(`[VM-${vm.vm_id}] CPU Config: ${vm.cpu_sockets} sockets x ${vm.cpu_cores} cores x ${vm.cpu_threads} threads = ${vm.cpus} total`);
       const cpuDisplayName = vm.custom_cpu_name || vm.cpu_model || 'host';
@@ -4948,7 +5386,7 @@ app.get('/', (req, res) => {
 // ============= SETTINGS ROUTES =============
 
 // Get all settings (no auth required for reading defaults)
-app.get('/api/settings', (req, res) => {
+app.get('/api/settings', checkAuth, (req, res) => {
   const os = require('os');
   
   db.all(`SELECT setting_key, setting_value FROM settings`, (err, rows) => {
@@ -4956,7 +5394,7 @@ app.get('/api/settings', (req, res) => {
     
     const settings = {
       panel_version: 'V2.0',
-      panel_title: 'HKVM Panel V2.0',
+      panel_title: 'Librefied by 4x1t3l',
       panel_description: 'Professional VM Management Panel',
       site_icon_url: 'https://i.imgur.com/0DmkSi4.png',
       session_timeout: 24,
@@ -5400,7 +5838,7 @@ app.post('/api/ssh/command', checkAuth, (req, res) => {
 // ============= 404 HANDLER =============
 app.use((req, res) => {
   res.status(404).render('users/404', {
-    title: 'Page Not Found - HKVM Panel',
+    title: 'Page Not Found - Librefied by 4x1t3l',
     message: 'Page not found'
   });
 });
@@ -5412,9 +5850,110 @@ initializeDatabase();
 const vmConsoles = new Map();
 const sshSessions = new Map();
 
-wss.on('connection', (ws, req) => {
+// ============= WEBSOCKET AUTHENTICATION =============
+// The console and the SSH terminal used to accept any anonymous client:
+// the WebSocket server was attached straight to the HTTP server and the
+// connection handler never looked at the session.  Now every upgrade is
+// authenticated before the socket is accepted.
+//
+// A browser cannot set headers on a WebSocket handshake, so authentication
+// is by session cookie only.  API keys remain available on the HTTP API.
+
+function parseCookieHeader(header) {
+  const out = {};
+  if (!header) return out;
+  for (const part of header.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx < 0) continue;
+    const key = part.slice(0, idx).trim();
+    if (!key) continue;
+    let value = part.slice(idx + 1).trim();
+    try { value = decodeURIComponent(value); } catch (e) { /* keep raw */ }
+    out[key] = value;
+  }
+  return out;
+}
+
+// Reproduce cookie-signature's sign/unsign so we can trust the session id.
+function unsignSessionCookie(value, secret) {
+  if (!value) return null;
+  const idx = value.lastIndexOf('.');
+  if (idx < 0) return null;
+  const val = value.slice(0, idx);
+  const expected = crypto.createHmac('sha256', secret)
+    .update(val)
+    .digest('base64')
+    .replace(/=+$/, '');
+  const a = Buffer.from(expected);
+  const b = Buffer.from(value.slice(idx + 1));
+  if (a.length !== b.length) return null;
+  return crypto.timingSafeEqual(a, b) ? val : null;
+}
+
+function rejectUpgrade(socket, status, message) {
+  const body = JSON.stringify({ error: message });
+  socket.write(
+    `HTTP/1.1 ${status} ${status === 401 ? 'Unauthorized' : status === 403 ? 'Forbidden' : 'Bad Request'}\r\n` +
+    `Content-Type: application/json\r\n` +
+    `Content-Length: ${Buffer.byteLength(body)}\r\n` +
+    `Connection: close\r\n\r\n${body}`
+  );
+  socket.destroy();
+}
+
+server.on('upgrade', (req, socket, head) => {
+  const url = req.url || '';
+
+  if (!url.startsWith('/console') && !url.startsWith('/ssh-terminal')) {
+    return rejectUpgrade(socket, 400, 'Unknown WebSocket endpoint');
+  }
+
+  const cookies = parseCookieHeader(req.headers.cookie);
+  const sid = unsignSessionCookie(cookies['connect.sid'], SESSION_SECRET);
+  if (!sid) {
+    console.warn(`[WebSocket] Rejected unauthenticated upgrade: ${url}`);
+    return rejectUpgrade(socket, 401, 'Authentication required');
+  }
+
+  const vmMatch = url.match(/\/(?:console|ssh-terminal)\/(\d+)/);
+  const vmId = vmMatch ? parseInt(vmMatch[1], 10) : null;
+  if (!vmId || Number.isNaN(vmId)) {
+    return rejectUpgrade(socket, 400, 'A VM id is required');
+  }
+
+  sessionStore.get(sid, (storeErr, sess) => {
+    if (storeErr || !sess || !sess.userId) {
+      console.warn(`[WebSocket] Rejected upgrade for an unknown session: ${url}`);
+      return rejectUpgrade(socket, 401, 'Authentication required');
+    }
+
+    db.get(`SELECT vm_id, owner_id, hostname, ipv4_address, ssh_port, ssh_port_static, ssh_username FROM vms WHERE vm_id = ?`,
+      [vmId], (dbErr, vm) => {
+        if (dbErr || !vm) {
+          return rejectUpgrade(socket, 404, 'VM not found');
+        }
+        const isAdmin = sess.role === 'admin';
+        if (!isAdmin && vm.owner_id !== sess.userId) {
+          console.warn(`[WebSocket] User ${sess.userId} tried to open VM ${vmId} owned by ${vm.owner_id}`);
+          return rejectUpgrade(socket, 403, 'You do not own this VM');
+        }
+
+        wss.handleUpgrade(req, socket, head, (ws) => {
+          wss.emit('connection', ws, req, {
+            userId: sess.userId,
+            username: sess.username,
+            role: sess.role,
+            vmId,
+            vm
+          });
+        });
+      });
+  });
+});
+
+wss.on('connection', (ws, req, auth) => {
   const url = req.url;
-  console.log(`[WebSocket] New connection: ${url}`);
+  console.log(`[WebSocket] New connection: ${url} (user ${auth && auth.userId})`);
   
   // SSH Terminal WebSocket - Path: /ssh-terminal
   if (url.startsWith('/ssh-terminal')) {
@@ -5425,17 +5964,28 @@ wss.on('connection', (ws, req) => {
         const msg = JSON.parse(message.toString());
         
         if (msg.type === 'connect') {
-          const { vmId, host, port, username, password } = msg;
+          const vmId = auth && auth.vmId;
+          const vm = auth && auth.vm;
+          if (!vmId || !vm) {
+            ws.send(JSON.stringify({ type: 'error', message: 'No VM selected' }));
+            return;
+          }
+          
+          // The destination comes from the VM record, never from the client:
+          // otherwise this is an open SSH proxy into the panel's network.
+          const host = vm.ipv4_address || vm.hostname;
+          const port = getSSHPort(vm);
+          const username = vm.ssh_username || 'root';
+          const password = msg.password || '';
+          
+          if (!host) {
+            ws.send(JSON.stringify({ type: 'error', message: 'This VM has no reachable address yet' }));
+            return;
+          }
           
           console.log(`[SSH-${vmId}] Initiating SSH connection to ${username}@${host}:${port}`);
           
-          // Verify VM ownership
-          db.get(`SELECT owner_id FROM vms WHERE vm_id = ?`, [vmId], (err, vm) => {
-            if (err || !vm) {
-              ws.send(JSON.stringify({ type: 'error', message: 'VM not found' }));
-              return;
-            }
-            
+          {
             // Create SSH client
             const sshClient = new Client();
             
@@ -5506,15 +6056,18 @@ wss.on('connection', (ws, req) => {
             // Connect to SSH server
             sshClient.connect({
               host: host,
-              port: parseInt(port),
+              port: port,
               username: username,
+              // The guest password is supplied by the operator in their
+              // browser - the panel does not store it.  The destination
+              // (host/port/username) always comes from the VM record.
               password: password,
               readyTimeout: 30000,
               algorithms: {
                 serverHostKey: ['ssh-rsa', 'ecdsa-sha2-nistp256', 'ssh-ed25519']
               }
             });
-          });
+          }
         } else if (msg.type === 'input' && ws.sshSessionId) {
           // Send user input to SSH shell (handle binary input)
           const session = sshSessions.get(ws.sshSessionId);
@@ -5551,16 +6104,12 @@ wss.on('connection', (ws, req) => {
     return;
   }
   
-  // Extract vmId from URL path like /console/1 or just /1
-  let vmId = null;
-  if (url.includes('/console/')) {
-    vmId = url.split('/console/')[1].split('?')[0];
-  } else {
-    vmId = url.split('/').pop().split('?')[0];
-  }
+  // The VM id comes from the authenticated upgrade, not from the URL.
+  const vmId = auth && auth.vmId;
+  const vmRow = auth && auth.vm;
   
-  if (!vmId || vmId === '' || isNaN(vmId)) {
-    console.log(`[WebSocket] Invalid vmId: "${vmId}"`);
+  if (!vmId) {
+    console.log(`[WebSocket] No VM id on an authenticated connection`);
     ws.send(JSON.stringify({ type: 'output', data: '\x1b[31m✗ Invalid VM ID\x1b[0m\r\n' }));
     ws.close();
     return;
@@ -5657,6 +6206,13 @@ wss.on('connection', (ws, req) => {
     try {
       const msg = JSON.parse(message);
       if (msg.type === 'input' && msg.data) {
+        // Cap what a client can append, so the log file cannot be used to
+        // fill the disk.
+        const MAX_INPUT = 4096;
+        if (typeof msg.data !== 'string' || msg.data.length > MAX_INPUT) {
+          ws.send(JSON.stringify({ type: 'error', message: 'Input too long' }));
+          return;
+        }
         // Append to log file
         fs.appendFileSync(logFile, msg.data);
         
@@ -5718,7 +6274,7 @@ server.listen(PORT, async () => {
 
   console.log(`
 ╔════════════════════════════════════════════════════════════╗
-║           HOPINGBOYZ VM MANAGEMENT PANEL V3.0              ║
+║           LIBREFIED BY 4X1T3L - HKVM PANEL V3.0              ║
 ║          Advanced VM Management & Control Panel            ║
 ╚════════════════════════════════════════════════════════════╝
 

@@ -1,5 +1,5 @@
 name: Bug report
-description: Something in HKVM Panel is not working as expected
+description: Something in Librefied by 4x1t3l is not working as expected
 labels: [bug]
 body:
   - type: markdown
@@ -14,7 +14,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: HKVM Panel version
+      label: Librefied by 4x1t3l version
       placeholder: "e.g. V3.0"
     validations:
       required: true

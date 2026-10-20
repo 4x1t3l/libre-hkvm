@@ -1,4 +1,4 @@
-# HKVM Panel
+# Librefied by 4x1t3l
 
 Web-based KVM/QEMU virtual machine management panel.
 
@@ -29,7 +29,7 @@ single self-contained binary with [`pkg`](https://github.com/vercel/pkg).
 ## Install
 
 ```bash
-git clone <your-repo-url> hkvm-panel
+git clone https://github.com/4x1t3l/libre-hkvm.git hkvm-panel
 cd hkvm-panel
 npm install
 npm start
@@ -58,7 +58,7 @@ All optional, via environment variables or a `.env` file in the project root
 |---|---|---|
 | `PORT` | `8080` | HTTP port |
 | `HKVM_DATA_DIR` | `~/.hkvm` | Where the SQLite database lives |
-| `PANEL_NAME` | `HKVM Panel` | Name shown in the UI |
+| `PANEL_NAME` | `Librefied by 4x1t3l` | Name shown in the UI |
 | `PANEL_VERSION` | `V3.0` | Version string shown in the UI |
 | `DEFAULT_LOGO_URL` | an imgur URL | Logo used by the EJS templates |
 
@@ -131,10 +131,33 @@ POST   /api/admin/api-keys     issue an API key (admin)
 ## Security
 
 **Read [SECURITY.md](SECURITY.md) before you expose this panel to the
-internet.** It lists the known issues in this release — notably that the
-WebSocket console and SSH terminal are unauthenticated, that
-`DELETE /api/vms/:id` has no ownership check, and that `disk_size` reaches a
-shell command. There is a hardening checklist at the bottom of that file.
+internet.**
+
+This release fixes the issues that were present in the original build:
+the WebSocket console and SSH terminal are now authenticated, every route
+that takes a VM id checks ownership, `disk_size` is validated and no
+longer reaches a shell, the session secret is no longer hardcoded, the
+default administrator password is generated rather than `admin`, and the
+login endpoint is rate limited. `SECURITY.md` lists each fix and what you
+still have to do yourself.
+
+The one thing the panel cannot do for you: **it speaks plain HTTP and
+trusts the reverse proxy in front of it.** Put it behind a proxy that
+terminates TLS, authenticates every request (including WebSocket
+upgrades) and restricts which addresses can reach it.
+
+### Configuration
+
+| Variable | Purpose |
+|---|---|
+| `SESSION_SECRET` | Session signing key, minimum 32 characters. Generated and persisted if unset. |
+| `HKVM_ADMIN_PASSWORD` | Password for the `admin` account on first boot. A random one is printed once if unset. |
+| `HKVM_DATA_DIR` | Where the database and the generated session secret live. |
+| `HKVM_TRUST_PROXY` | Set to `1` behind a TLS-terminating proxy. |
+| `HKVM_SECURE_COOKIES` | Set to `1` to force the `Secure` cookie flag outside production. |
+| `HKVM_LOGIN_LIMIT_PER_IP` | Login attempts per address per 15 minutes (default 30). |
+| `HKVM_LOGIN_LIMIT_PER_ACCOUNT` | Failed login attempts per account per 15 minutes (default 5). |
+| `HKVM_ALLOW_PRIVATE_DOWNLOADS` | Set to `1` to allow template downloads from private addresses. |
 
 ## Contributing
 
